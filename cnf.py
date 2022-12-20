@@ -12,6 +12,8 @@ tfd = tfp.distributions
 import equinox as eqx
 import diffrax
 
+from utils import augment_sample
+
 class ConcatSquash(eqx.Module):
   lin1: eqx.nn.Linear
   lin2: eqx.nn.Linear
@@ -75,6 +77,7 @@ def exact_logp_wrapper(t, z, args):
 class CNF(eqx.Module):
   funcs: List[Func]
   num_latents: int
+  num_augments: int
   t0: float
   t1: float
   dt0: float
@@ -83,6 +86,7 @@ class CNF(eqx.Module):
     self,
     *,
     num_latents,
+    num_augments = 0,
     num_conds,
     width_size,
     num_blocks,
@@ -94,7 +98,7 @@ class CNF(eqx.Module):
     ks = split(key, num_blocks)
     self.funcs = [
       Func(
-        num_latents=num_latents,
+        num_latents=num_latents + num_augments,
         num_conds=num_conds,
         width_size=width_size,
         depth=depth,
@@ -103,28 +107,30 @@ class CNF(eqx.Module):
       for k in ks
     ]
     self.num_latents = num_latents
+    self.num_augments = num_augments
     self.t0 = 0
     self.t1 = 1
     self.dt0 = 0.1
   
-  def log_p(self, z, cond_vars):
+  def log_p(self, z, cond_vars, key):
+    z_aug = augment_sample(key,z,self.num_augments)
     term = diffrax.ODETerm(exact_logp_wrapper)
     solver = diffrax.Tsit5(scan_stages=False)
     delta_log_likelihood = 0.0
     for func in reversed(self.funcs):
-      z = (z, delta_log_likelihood)
+      z_aug = (z_aug, delta_log_likelihood)
       sol = diffrax.diffeqsolve(
-        term, solver, self.t1, self.t0, -self.dt0, z, (cond_vars, func)
+        term, solver, self.t1, self.t0, -self.dt0, z_aug, (cond_vars, func)
       )
-      (z,), (delta_log_likelihood,) = sol.ys
-    return delta_log_likelihood + tfd.Normal(0,1).log_prob(z).sum()
+      (z_aug,), (delta_log_likelihood,) = sol.ys
+    return delta_log_likelihood + tfd.Normal(0,1).log_prob(z_aug).sum()
   
   def rsample(self, key, cond_vars):
-    z = tfd.Normal(0,1).sample(seed=key, sample_shape=(self.num_latents,))
+    z = tfd.Normal(0,1).sample(seed=key, sample_shape=(self.num_latents + self.num_augments,))
     for func in self.funcs:
       term = diffrax.ODETerm(func)
       solver = diffrax.Tsit5()
       sol = diffrax.diffeqsolve(term, solver, self.t0, self.t1, self.dt0, z, (cond_vars,))
       (z,) = sol.ys
-    return z
+    return z[:self.num_latents]
   

@@ -9,10 +9,11 @@ import time
 def test_CNF():
   '''
   test if the conditional CNF can learn to produce 
-  a normal with mean 1,-1 depending on a bernoulli
+  a normal with mean 0.5,-0.5 depending on a bernoulli
   '''
   model = CNF(
-    num_latents=10,
+    num_latents=1,
+    num_augments=9,
     num_conds=1,
     width_size=128,
     num_blocks=1,
@@ -21,23 +22,25 @@ def test_CNF():
   )
   
   def sample(k):
-    '''sample a bernoulli and then 
+    '''sample a bernoulli and then sample the normal based on the value of the bernoulli.
+    Augment the flow with standard normals to make it easier to learn.
     '''
     ks = split(k,3)
     b = bernoulli(ks[0],0.5)
     s = normal(ks[1])
     s /= 10.0
     s += jax.lax.cond(b, lambda: 0.5, lambda: -.5)
-    s = jnp.concatenate([s[None], normal(ks[2],shape=(9,))])
-    return s, b[None]
+    # s = jnp.concatenate([s[None], normal(ks[2],shape=(9,))])
+    return s[None], b[None]
     # return s[None], b[None]
   
+  num_steps = 200
   optim = optax.chain(
         optax.clip_by_global_norm(5.0),
         optax.adamw(learning_rate=optax.cosine_onecycle_schedule(
-                                      300,
+                                      num_steps,
                                       0.025,
-                                      0.001,
+                                      0.01,
                                       1e0,
                                       1e2,
                                   ), 
@@ -47,21 +50,21 @@ def test_CNF():
   opt_state = optim.init(eqx.filter(model,eqx.is_inexact_array))
   
   @eqx.filter_value_and_grad
-  def loss(model, s_batch, b_batch):
-    log_p = jax.vmap(model.log_p)(s_batch,b_batch)
+  def loss(model, s_batch, b_batch, key):
+    log_p = jax.vmap(model.log_p)(s_batch,b_batch, split(key, b_batch.shape[0]))
     return -jnp.mean(log_p)
   
   @eqx.filter_jit
   def make_step(model, opt_state, key):
-    ks = split(key, batch_size+1)
+    ks = split(key, batch_size+2)
     s_batch, b_batch = jax.vmap(sample)(ks[:-1])
-    l, grads = loss(model, s_batch, b_batch)
+    l, grads = loss(model, s_batch, b_batch, ks[-2])
     updates, opt_state = optim.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
     return l, model, opt_state, ks[-1]
   
   key = PRNGKey(573)
-  for i in range(200):
+  for i in range(num_steps):
     start = time.time()
     l, model, opt_state, key = make_step(
       model, opt_state, key
