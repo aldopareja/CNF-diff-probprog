@@ -125,7 +125,14 @@ class CNF(eqx.Module):
         for func in reversed(self.funcs):
             z_aug = (z_aug, delta_log_likelihood)
             sol = diffrax.diffeqsolve(
-                term, solver, self.t1, self.t0, -self.dt0, z_aug, (cond_vars, func)
+                term,
+                solver,
+                self.t1,
+                self.t0,
+                -1.0,
+                z_aug,
+                (cond_vars, func),
+                stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             )
             (z_aug,), (delta_log_likelihood,) = sol.ys
         return delta_log_likelihood + tfd.Normal(0, 1).log_prob(z_aug).sum()
@@ -138,7 +145,14 @@ class CNF(eqx.Module):
             term = diffrax.ODETerm(func)
             solver = diffrax.Tsit5()
             sol = diffrax.diffeqsolve(
-                term, solver, self.t0, self.t1, self.dt0, z, (cond_vars,)
+                term,
+                solver,
+                self.t0,
+                self.t1,
+                1.0,
+                z,
+                (cond_vars,),
+                stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             )
             (z,) = sol.ys
         return z[: self.num_latents]

@@ -35,7 +35,7 @@ def test_CNF():
         return s[None], b[None]
         # return s[None], b[None]
 
-    num_steps = 200
+    num_steps = 250
     optim = optax.chain(
         optax.clip_by_global_norm(5.0),
         optax.adamw(
@@ -73,7 +73,7 @@ def test_CNF():
         end = time.time()
         if i % 20 == 0 or i == 1:
             print("l", l, "t", end - start)
-        if i % 100 == 0:
+        if i % 50 == 0:
             pos_sample = jax.vmap(model.rsample)(split(key, 1000), jnp.ones((1000, 1)))
             print(
                 "pos_sample_mean",
