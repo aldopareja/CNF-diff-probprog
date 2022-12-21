@@ -66,17 +66,24 @@ class Func(eqx.Module):
         dz_dt = self.layers[-1](t, z)
         return dz_dt
 
-
+# the function to drive the differential equation (i.e. in dx/dt = g(x,t), this would be g)
+# in particular, the ODE we're solving is actually two ODEs stacked, so [dz/dt, d ln(q)/dt] = [f, -\nabla_z \cdot f]
+# So this gives 
 def exact_logp_wrapper(t, z, args):
+    # takes:
+        # t
+        # z
+        # (cond_vars, f)
+    # returns: [f(z,t), -\nabla_z \cdot f(z,t)]
     z, _ = z
     *args, func = args
     fn = lambda y: func(t, y, args)
     f, vjp_fn = jax.vjp(fn, z)
     (size,) = z.shape  # this implementation only works for 1D input
     eye = jnp.eye(size)
-    (dfdy,) = jax.vmap(vjp_fn)(eye)
-    logp = jnp.trace(dfdy)
-    return f, logp
+    (dfdy,) = jax.vmap(vjp_fn)(eye) # don't quite get why we don't do a matrix multiply here
+    div_z_f = jnp.trace(dfdy)
+    return f, div_z_f
 
 
 class CNF(eqx.Module):
@@ -118,24 +125,28 @@ class CNF(eqx.Module):
         self.dt0 = 0.1
 
     def log_p(self, z, cond_vars, key):
-        z_aug = augment_sample(key, z, self.num_augments)
-        term = diffrax.ODETerm(exact_logp_wrapper)
+        vector_field = diffrax.ODETerm(exact_logp_wrapper)
         solver = diffrax.Tsit5(scan_stages=False)
+
+        # initial values
+        z_aug = augment_sample(key, z, self.num_augments)
         delta_log_likelihood = 0.0
-        for func in reversed(self.funcs):
-            z_aug = (z_aug, delta_log_likelihood)
+
+        for func in reversed(self.funcs): # reversed because we're going backwards
+            # solving two 1D diff-eqs at once, formulated as a single 2D diff-eq
             sol = diffrax.diffeqsolve(
-                term,
-                solver,
-                self.t1,
-                self.t0,
-                -1.0,
-                z_aug,
-                (cond_vars, func),
+                terms=vector_field, # i.e. the "f" in dx/dt = f(x,t)
+                sovler=solver,
+                t0=self.t1, # initial time (we're running it backwards)
+                t1=self.t0, # final time
+                dt0=-1.0, # step size
+                y0=(z_aug, delta_log_likelihood),
+                args=(cond_vars, func), # additional vars passed to f. passing func is a bit weird, I wonder if I can refactor...
                 stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             )
             (z_aug,), (delta_log_likelihood,) = sol.ys
-        return delta_log_likelihood + tfd.Normal(0, 1).log_prob(z_aug).sum()
+        # the log prob in the observation space, adjusted as necessary by the determinant of the jacobian
+        return delta_log_likelihood + tfd.Normal(0, 1).log_prob(z_aug).sum() 
 
     def rsample(self, key, cond_vars):
         z = tfd.Normal(0, 1).sample(
@@ -145,14 +156,14 @@ class CNF(eqx.Module):
             term = diffrax.ODETerm(func)
             solver = diffrax.Tsit5()
             sol = diffrax.diffeqsolve(
-                term,
-                solver,
-                self.t0,
-                self.t1,
-                1.0,
-                z,
-                (cond_vars,),
+                terms=term,
+                solver=solver,
+                t0=self.t0,
+                t1=self.t1,
+                dt0=1.0,
+                y0=z,
+                args=(cond_vars,),
                 stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             )
             (z,) = sol.ys
-        return z[: self.num_latents]
+        return z[: self.num_latents] # why would z be larger? should this be an assert check?
