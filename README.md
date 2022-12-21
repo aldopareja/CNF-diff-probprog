@@ -11,7 +11,7 @@ Suppose we have a forward model $p(x|z)$. Our aim is to learn $p(z|x)$, for whic
 Inference compilation can be achieved with steps of the following expected gradient:
 
 $$
-- E_{p(x,z)}\llbracket \nabla_\phi \log q_\phi(z|x) \rrbracket
+- E_{p(x,z)}[ \nabla_\phi \log q_\phi(z|x) ]
 $$
 
 (Easy to derive, see section 3.1 of [this paper](https://arxiv.org/pdf/1610.09900.pdf))
