@@ -44,7 +44,7 @@ Since the time-evolving map implied by $f$ is a differentiable bijective map (*w
 An advantage is that we don't need to repeatedly compute the determinant of the Jacobian, since thanks to Jacobi's formula, we have:
 
 $$
-\frac{\partial log(p(y(t)))}{\partial t} = -tr\llbracket \frac{df}{dy(t)}\rrbracket
+\frac{\partial log(p(y(t)))}{\partial t} = -tr[ \frac{df}{dy(t)}]
 $$
 
 So we can compute the determinant once, obtain the initial log probability, and then evolve it forward via a numerical solution to this ODE, computing the cheaper trace of a Jacobian.
