@@ -13,6 +13,9 @@ tfd = tfp.distributions
 import equinox as eqx
 import diffrax
 
+from functools import partial
+
+
 from utils import augment_sample
 
 
@@ -69,14 +72,14 @@ class Func(eqx.Module):
 # the function to drive the differential equation (i.e. in dx/dt = g(x,t), this would be g)
 # in particular, the ODE we're solving is actually two ODEs stacked, so [dz/dt, d ln(q)/dt] = [f, -\nabla_z \cdot f]
 # So this gives 
-def exact_logp_wrapper(t, z, args):
+def exact_logp_wrapper(func, t, z, args):
     # takes:
         # t
         # z
         # (cond_vars, f)
     # returns: [f(z,t), -\nabla_z \cdot f(z,t)]
     z, _ = z
-    *args, func = args
+    # *args = args
     fn = lambda y: func(t, y, args)
     f, vjp_fn = jax.vjp(fn, z)
     (size,) = z.shape  # this implementation only works for 1D input
@@ -125,7 +128,6 @@ class CNF(eqx.Module):
         self.dt0 = 0.1
 
     def log_p(self, z, cond_vars, key):
-        vector_field = diffrax.ODETerm(exact_logp_wrapper)
         solver = diffrax.Tsit5(scan_stages=False)
 
         # initial values
@@ -135,13 +137,13 @@ class CNF(eqx.Module):
         for func in reversed(self.funcs): # reversed because we're going backwards
             # solving two 1D diff-eqs at once, formulated as a single 2D diff-eq
             sol = diffrax.diffeqsolve(
-                terms=vector_field, # i.e. the "f" in dx/dt = f(x,t)
-                sovler=solver,
+                terms=diffrax.ODETerm(partial(exact_logp_wrapper, func)), # i.e. the "f" in dx/dt = f(x,t)
+                solver=solver,
                 t0=self.t1, # initial time (we're running it backwards)
                 t1=self.t0, # final time
                 dt0=-1.0, # step size
                 y0=(z_aug, delta_log_likelihood),
-                args=(cond_vars, func), # additional vars passed to f. passing func is a bit weird, I wonder if I can refactor...
+                args=(cond_vars,), # additional vars passed to f. passing func is a bit weird, I wonder if I can refactor...
                 stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             )
             (z_aug,), (delta_log_likelihood,) = sol.ys
