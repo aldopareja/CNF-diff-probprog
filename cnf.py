@@ -72,21 +72,20 @@ class Func(eqx.Module):
 # the function to drive the differential equation (i.e. in dx/dt = g(x,t), this would be g)
 # in particular, the ODE we're solving is actually two ODEs stacked, so [dz/dt, d ln(q)/dt] = [f, -\nabla_z \cdot f]
 # So this gives 
-def exact_logp_wrapper(func, t, z, args):
+def exact_logp_wrapper(func, t, odeVar, args):
     # takes:
         # t
         # z
         # (cond_vars, f)
     # returns: [f(z,t), -\nabla_z \cdot f(z,t)]
-    z, _ = z
+    z, _ = odeVar
     # *args = args
-    fn = lambda y: func(t, y, args)
-    f, vjp_fn = jax.vjp(fn, z)
+    fVal, vjp_fn = jax.vjp(lambda y: func(t, y, args), z)
     (size,) = z.shape  # this implementation only works for 1D input
     eye = jnp.eye(size)
     (dfdy,) = jax.vmap(vjp_fn)(eye) # don't quite get why we don't do a matrix multiply here
     div_z_f = jnp.trace(dfdy)
-    return f, div_z_f
+    return fVal, div_z_f
 
 
 class CNF(eqx.Module):
