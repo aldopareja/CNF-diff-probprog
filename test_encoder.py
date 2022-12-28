@@ -26,10 +26,10 @@ class EncoderClassifier(eqx.Module):
       dropout_rate=0.1,
       d_model=52,
       num_input_variables=1,
-      num_enc_layers=2
+      num_enc_layers=2,
       ),
     )
-    self.mlp = eqx.nn.MLP(52,6,width_size=52,depth=1,key=ks[1])
+    self.mlp = eqx.nn.MLP(52,2,width_size=52,depth=1,key=ks[1])
     
   def __call__(self,x, key):
     assert x.ndim == 2 and x.shape[1] == 1
@@ -45,18 +45,32 @@ def test_encoder():
   m = EncoderClassifier(key=PRNGKey(5543))
   
   obs_size = 100
-  def sample(k,*, max_num_mixtures=6):
-    """sample a bernoulli and then sample the normal based on the value of the bernoulli.
+  def sample(k,*, max_num_mixtures=2, dims=1):
+    """a number of mixtures and then sample the normal based on the value of the bernoulli.
     Augment the flow with standard normals to make it easier to learn.
     """
-    ks = split(k, 3)
-    # b = bernoulli(ks[0], 0.5)
+    ks = split(k, 4)
     b = tfd.Categorical(
         probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     ).sample(seed=ks[0])
-    s = normal(ks[1],shape=(obs_size,1))
-    s /= 10.0
-    s += jnp.arange(max_num_mixtures)[b]/max_num_mixtures
+    # means = tfd.Uniform(low=-1.0, high=1.0).sample(
+    #     seed=ks[1], sample_shape=(max_num_mixtures, dims)
+    # )
+    means = jnp.stack([jnp.arange(max_num_mixtures)]*dims,axis=1)[:,None,:]
+    # means = jax.random.shuffle(ks[3],means,axis=0)
+    
+    class_labels_probs = jnp.where(
+        jnp.arange(max_num_mixtures) < b,
+        jnp.ones((max_num_mixtures,)),
+        jnp.zeros((max_num_mixtures,)),
+    )
+    
+    class_labels = tfd.Categorical(probs=class_labels_probs).sample(
+        seed=ks[3], sample_shape=(obs_size,)
+    )
+    s = normal(ks[2],shape=(obs_size,dims))
+    s /= 30.0
+    s += means[b].reshape(-1,dims)
     return s, jnp.int32(b)
   
   # def sample_obs(means, class_label, k):
@@ -111,12 +125,15 @@ def test_encoder():
   
   @eqx.filter_value_and_grad
   def loss(m, obs, b, key):
-    assert obs.ndim == 3 and obs.shape[2]==1 and jnp.dtype(b) == jnp.int32 and b.ndim == 1
+    assert obs.ndim == 3 and obs.shape[2]== 1 and jnp.dtype(b) == jnp.int32 and b.ndim == 1
     logits = jax.vmap(m)(obs,split(key,obs.shape[0]))
     @jax.vmap
-    def log_p(logits,b):
-      assert b.ndim == 0 and logits.ndim == 1
-      return logits[b] - jax.nn.logsumexp(logits)
+    def log_p(logits_,b):
+      assert b.ndim == 0 and logits_.ndim == 1
+      # jax.lax.cond(b>=len(logits_), 
+      #              lambda: jax.debug.print("{b} invalid {a}", b = b, a=len(logits_)), 
+      #              lambda: jax.debug.print("{b} valid", b = b))
+      return logits_[b] - jax.nn.logsumexp(logits_)
     return -log_p(logits,b).mean()
   
   @eqx.filter_jit
