@@ -3,6 +3,7 @@ from typing import List
 
 import math
 
+import jax
 from jax import vmap
 from jax import numpy as jnp
 from jax.random import split, PRNGKey, uniform
@@ -10,7 +11,7 @@ import equinox as eqx
 from jaxtyping import Array
 
 @dataclass
-class TransformerCfg:
+class EncoderCfg:
   num_heads: int = 4
   dropout_rate: float = 0.1
   d_model: int = 52
@@ -24,7 +25,7 @@ class EncoderLayer(eqx.Module):
   mlp: eqx.nn.MLP
   dropout: eqx.nn.Dropout
   
-  def __init__(self, *, key, c:TransformerCfg):
+  def __init__(self, *, key, c:EncoderCfg):
     ks = split(key, 3)
     self.multihead_Attention = eqx.nn.MultiheadAttention(
       num_heads = c.num_heads,
@@ -61,10 +62,11 @@ class EncoderLayer(eqx.Module):
     
 class Encoder(eqx.Module):
   obs_to_embed: eqx.nn.Linear
-  enc_token: Array
+  summary_token: Array
   enc_layers: List[EncoderLayer]
+  num_input_vars: eqx.static_field()
   
-  def __init__(self, *, key:PRNGKey, c:TransformerCfg):
+  def __init__(self, *, key:PRNGKey, c:EncoderCfg):
     ks = split(key,10)
     self.obs_to_embed = eqx.nn.Linear(
       in_features=c.num_input_variables, 
@@ -73,15 +75,16 @@ class Encoder(eqx.Module):
       )
     
     lim = 1 / math.sqrt(c.d_model)
-    self.enc_token = uniform(ks[1], (1,c.d_model), minval=-lim, maxval=lim)
+    self.summary_token = uniform(ks[1], (1,c.d_model), minval=-lim, maxval=lim)
     
     self.enc_layers = [EncoderLayer(key=ks[2],c=c) for _ in range(c.num_enc_layers)]
+    self.num_input_vars = c.num_input_variables
     
   def __call__(self,x,*,key):
-    assert x.ndim == 2
+    assert x.ndim == 2 and x.shape[1] == self.num_input_vars
     ks = split(key, len(self.enc_layers))
     x = vmap(self.obs_to_embed)(x)
-    x = jnp.concatenate([x,self.enc_token])
+    x = jnp.concatenate([x,self.summary_token])
     
     for i,enc in enumerate(self.enc_layers):
       x = enc(x,key=ks[i])
@@ -89,6 +92,6 @@ class Encoder(eqx.Module):
     return x[-1]
     
 if __name__ == "__main__":
-  m = Encoder(key=PRNGKey(0), c=TransformerCfg())
+  m = Encoder(key=PRNGKey(0), c=EncoderCfg())
   x = m(jnp.ones((100,2)),key=PRNGKey(1))
   print(x,x.shape)
