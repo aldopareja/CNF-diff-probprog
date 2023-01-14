@@ -41,3 +41,12 @@ def ks_test(s1,s2, resolution=1000, r_max=10, r_min=-10):
   ks_test = jnp.abs(cdf1 - cdf2).max()
   return ks_test
   
+def compare_discrete_samples(y1,y2):
+  """computes how many times two variables are the same
+  """
+  assert y1.shape == y2.shape and y1.ndim == 1
+  return jnp.where(
+    y1==y2, 
+    jnp.ones((y1.shape[0],)), 
+    jnp.zeros((y1.shape[0]))
+  ).sum()/y1.shape[0]

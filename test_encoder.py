@@ -24,12 +24,12 @@ class EncoderClassifier(eqx.Module):
     c=EncoderCfg(
       num_heads=4,
       dropout_rate=0.1,
-      d_model=52,
+      d_model=128,
       num_input_variables=1,
-      num_enc_layers=3
+      num_enc_layers=5,
       ),
     )
-    self.mlp = eqx.nn.MLP(52,6,width_size=52,depth=1,key=ks[1])
+    self.mlp = eqx.nn.MLP(128,6,width_size=128,depth=1,key=ks[1])
     
   def __call__(self,x, key):
     assert x.ndim == 2 and x.shape[1] ==1
@@ -44,7 +44,7 @@ def test_encoder():
   
   m = EncoderClassifier(key=PRNGKey(5543))
   
-  obs_size = 100
+  obs_size = 150
   def sample(k,*, max_num_mixtures=6, dims=1):
     """sample a bernoulli and then sample the normal based on the value of the bernoulli.
     Augment the flow with standard normals to make it easier to learn.
@@ -66,28 +66,31 @@ def test_encoder():
     )
     
     s = normal(ks[1],shape=(obs_size,dims))
-    s /= 10.0
+    s /= 100.0
     
-    mean = (jnp.stack([jnp.arange(max_num_mixtures)]*dims,axis=1)/max_num_mixtures)[class_labels].reshape(-1,dims)
+    # mean = (jnp.stack([jnp.arange(max_num_mixtures)]*dims,axis=1)/max_num_mixtures)[class_labels].reshape(-1,dims)
+    mean = tfd.Uniform(low=-1.0, high=1.0).sample(
+        seed=ks[2], sample_shape=(max_num_mixtures, dims)
+    )[class_labels].reshape(-1,dims)
     s += mean
     return s, jnp.int32(b)
 
-  num_steps = 10000
+  num_steps = 20000
   optim = optax.chain(
      optax.clip_by_global_norm(5.0),
         optax.adamw(
             learning_rate=optax.cosine_onecycle_schedule(
                 num_steps,
-                0.002,
+                0.001,
                 0.01,
-                1e0,
-                1e2,
+                1e1,
+                3e2,
             ),
             weight_decay=0.0005,
         ),
   )
     
-  batch_size = 500
+  batch_size = 250
   opt_state = optim.init(eqx.filter(m, eqx.is_inexact_array))
   
   @eqx.filter_value_and_grad
@@ -118,6 +121,7 @@ def test_encoder():
     if i % 20 == 0 or i == 1:
       print("l", l, "t", end - start)
       
+  m = eqx.tree_inference(m, value=True)
   test_obs, test_b = jax.vmap(sample)(split(PRNGKey(3659),1000))
   logits = jax.vmap(m)(test_obs,split(key,test_obs.shape[0]))
   b_hat = jnp.argmax(logits,axis=1)

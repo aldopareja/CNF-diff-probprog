@@ -60,7 +60,7 @@ def test_CNF():
     @eqx.filter_jit
     def make_step(model, opt_state, key):
         ks = split(key, batch_size + 2)
-        s_batch, b_batch = jax.vmap(sample)(ks[:-1])
+        s_batch, b_batch = jax.vmap(sample)(ks[:-2])
         l, grads = loss(model, s_batch, b_batch, ks[-2])
         updates, opt_state = optim.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
