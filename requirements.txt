@@ -1,0 +1,5 @@
+optax
+jax 
+tensorflow_probability
+diffrax
+equinox
