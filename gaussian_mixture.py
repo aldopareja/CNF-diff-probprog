@@ -46,11 +46,11 @@ def sample_observations(means, cov_matrices, class_label, k):
 
 def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
     ks = split(k, 5)
-    # num_mixtures = tfd.Categorical(
-    #     probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
-    # ).sample(seed=ks[0])
+    num_mixtures = tfd.Categorical(
+        probs=jnp.ones((2,)) / 2
+    ).sample(seed=ks[0])
     # num_mixtures = max_num_mixtures - 1
-    num_mixtures = 4
+    # num_mixtures = 4
 
     means = tfd.Uniform(low=-1.0, high=1.0).sample(
         seed=ks[1], sample_shape=(max_num_mixtures, dims)

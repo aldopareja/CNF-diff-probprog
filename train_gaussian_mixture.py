@@ -71,17 +71,34 @@ def loss(model: InferenceGaussianMixture, s_batch, key):
 
 
 @eqx.filter_jit
-def make_step(model, opt_state, key, batch_size, virtual_batch_size):
-    for _ in 
-    ks = split(key, batch_size + 2)
-    s_batch = vmap(gaussian_mixture)(ks[: batch_size])
-    l, grads = loss(model, s_batch, ks[-2])
+def make_step(model, opt_state, key, virtual_batch_size, num_virtual_batches):
+    grads = jax.tree_util.tree_map(
+            lambda leaf: jnp.zeros_like(leaf) if eqx.is_inexact_array(leaf) else None,
+            model,
+        )
+    l = 0
+    
+    #accumulate gradients to simulate larger batches with less memory requirement
+    def virtual_step(_, state):
+        key, grads, l = state
+        ks = split(key, virtual_batch_size + 2)
+        s_batch = vmap(gaussian_mixture)(ks[: virtual_batch_size])
+        l_, grads_ = loss(model, s_batch, ks[-2])
+        grads = jax.tree_util.tree_map(lambda a,b: a+b, grads_, grads)
+        l += l_
+        return ks[-1], grads, l
+    
+    key, grads, l = jax.lax.fori_loop(0,num_virtual_batches, virtual_step, (key, grads, l))
+    
+    grads = jax.tree_util.tree_map(lambda a: a/num_virtual_batches, grads)
+    l = l/num_virtual_batches
+        
     updates, opt_state = optim.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
     norm = jnp.linalg.norm(
         jax.flatten_util.ravel_pytree(eqx.filter(model, eqx.is_inexact_array))[0]
     )
-    return l, model, opt_state, ks[-1], norm
+    return l, model, opt_state, key, norm
 
 
 def trunc_abs_distance(max_num_mixtures, num_mixtures, x, x_hat):
@@ -110,8 +127,10 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
         model.max_num_mixtures, num_mixtures, means, means_hat
     ).mean()
     
-    obs_log_p = gaussian_mixture_log_p(obs, means=means, cov_terms=jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50), num_mixtures=num_mixtures, max_num_mixtures=6)
-    obs_log_p_hat = gaussian_mixture_log_p(obs, means=means_hat, cov_terms=jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50), num_mixtures=num_mixtures_hat, max_num_mixtures=6)
+    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]), 
+                                             num_mixtures=num_mixtures).mean()
+    obs_log_p_hat = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
+                                                 num_mixtures=num_mixtures_hat).mean()
     return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_obs_log_p=obs_log_p-obs_log_p_hat)
     fit_covs = vmap(trunc_abs_distance, in_axes=(None, 0, 0, 0))(
         model.max_num_mixtures, num_mixtures, cov_terms, cov_terms_hat
@@ -151,13 +170,14 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=1,
+        load_idx=3,
         evaluate_iters=10,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
 
     # optimization cfg
-    c.batch_size = 250
+    c.virtual_batch_size = 200
+    c.num_virtual_batches = 2
     c.eval_size = 10000
     c.opt_c = AttrDict(
         max_lr=0.001,
@@ -181,7 +201,7 @@ if __name__ == "__main__":
 
     for i in range(c.opt_c.num_steps):
         start = time.time()
-        l, m, opt_state, k, norm = make_step(m, opt_state, k, c.batch_size)
+        l, m, opt_state, k, norm = make_step(m, opt_state, k, c.virtual_batch_size, c.num_virtual_batches)
         end = time.time()
 
         log = AttrDict(loss=l.item(), norm=norm.item(), batch=i, time_it=end - start)
