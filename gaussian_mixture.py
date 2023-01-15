@@ -14,7 +14,7 @@ from encoder import Encoder, EncoderCfg
 from cnf import CNF
 
 
-def build_cov_matrices(t, dims, max_num_mixtures, eps=1e-5):
+def build_cov_matrices(t, dims, eps=1e-5):
     """
     if you get a lower triangular matrix L then you can ensure a positive
     definite covariance matrix by computing:
@@ -28,9 +28,9 @@ def build_cov_matrices(t, dims, max_num_mixtures, eps=1e-5):
     # t = jnp.triu(t)
     t = tfp.math.fill_triangular(t)
 
-    eps_I = jnp.eye(dims)[None] * eps
-    cov_matrices = jnp.matmul(t, t.swapaxes(-2, -1)) + eps_I
-    return cov_matrices
+    # eps_I = jnp.eye(dims)[None] * eps
+    # cov_matrices = jnp.matmul(t, t.swapaxes(-2, -1)) + eps_I
+    return t
 
 
 def sample_observations(means, cov_matrices, class_label, k):
@@ -50,7 +50,7 @@ def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
     #     probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     # ).sample(seed=ks[0])
     # num_mixtures = max_num_mixtures - 1
-    num_mixtures = 0
+    num_mixtures = 4
 
     means = tfd.Uniform(low=-1.0, high=1.0).sample(
         seed=ks[1], sample_shape=(max_num_mixtures, dims)
@@ -85,6 +85,32 @@ def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
 
     return num_mixtures, means, cov_terms, class_labels, obs
 
+def gaussian_mixture_log_p_single_obs(observation, means,cov_terms, num_mixtures, max_num_mixtures=6):
+    assert observation.ndim == 1
+    assert means.ndim == 2 and means.shape[1] == observation.shape[0] and means.shape[0] == max_num_mixtures
+    assert cov_terms.ndim == 2 and cov_terms.shape[0] == max_num_mixtures
+    cov_matrices = build_cov_matrices(cov_terms, 2)
+    assert cov_matrices.ndim == 3 and cov_matrices.shape[2] == observation.shape[0]
+    
+    normals_log_p = tfd.MultivariateNormalTriL(
+        loc=means, scale_tril=cov_matrices
+    ).log_prob(observation)
+    
+    num_mix_mask = jnp.where(
+        jnp.arange(max_num_mixtures) <= num_mixtures,
+        jnp.ones((max_num_mixtures,)),
+        jnp.zeros((max_num_mixtures,)),
+    )
+    
+    log_p = jax.nn.logsumexp(normals_log_p * num_mix_mask)
+    
+    return log_p
+
+def gaussian_mixture_log_p(many_obs, means, cov_terms, num_mixtures, max_num_mixtures=6):
+    assert many_obs.ndim == 2
+    return (vmap(gaussian_mixture_log_p_single_obs, in_axes=(0,None,None,None,None))(many_obs, means, cov_terms, num_mixtures, max_num_mixtures)).sum()
+
+    
 
 class InferenceGaussianMixture(eqx.Module):
     obs_encoder: Encoder

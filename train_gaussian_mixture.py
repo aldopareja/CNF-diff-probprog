@@ -11,6 +11,7 @@ This was taken from section 4.1 of [1]
 """
 from pathlib import Path
 import time
+import math
 
 import jax
 from jax import vmap
@@ -23,7 +24,7 @@ from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
 from utils import AttrDict, compare_discrete_samples
-from gaussian_mixture import gaussian_mixture, InferenceGaussianMixture
+from gaussian_mixture import gaussian_mixture, InferenceGaussianMixture, gaussian_mixture_log_p
 
 
 def initialize_model(
@@ -70,7 +71,8 @@ def loss(model: InferenceGaussianMixture, s_batch, key):
 
 
 @eqx.filter_jit
-def make_step(model, opt_state, key, batch_size):
+def make_step(model, opt_state, key, batch_size, virtual_batch_size):
+    for _ in 
     ks = split(key, batch_size + 2)
     s_batch = vmap(gaussian_mixture)(ks[: batch_size])
     l, grads = loss(model, s_batch, ks[-2])
@@ -107,7 +109,10 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
     fit_means = vmap(trunc_abs_distance, in_axes=(None, 0, 0, 0))(
         model.max_num_mixtures, num_mixtures, means, means_hat
     ).mean()
-    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means)
+    
+    obs_log_p = gaussian_mixture_log_p(obs, means=means, cov_terms=jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50), num_mixtures=num_mixtures, max_num_mixtures=6)
+    obs_log_p_hat = gaussian_mixture_log_p(obs, means=means_hat, cov_terms=jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50), num_mixtures=num_mixtures_hat, max_num_mixtures=6)
+    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_obs_log_p=obs_log_p-obs_log_p_hat)
     fit_covs = vmap(trunc_abs_distance, in_axes=(None, 0, 0, 0))(
         model.max_num_mixtures, num_mixtures, cov_terms, cov_terms_hat
     ).mean()
@@ -146,7 +151,7 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=None,
+        load_idx=1,
         evaluate_iters=10,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
@@ -155,9 +160,9 @@ if __name__ == "__main__":
     c.batch_size = 250
     c.eval_size = 10000
     c.opt_c = AttrDict(
-        max_lr=0.003,
+        max_lr=0.001,
         num_steps=int(10000),
-        pct_start=0.001,
+        pct_start=0.0001,
         div_factor=1e1,
         final_div_factor=2e1,
         weight_decay=0.0005,
