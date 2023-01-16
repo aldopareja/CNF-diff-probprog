@@ -65,9 +65,18 @@ def initialize_optim(optim_cfg, model):
 def loss(model: InferenceGaussianMixture, s_batch, key):
     num_mixtures, means, cov_terms, class_labels, obs = s_batch
     assert num_mixtures.ndim==1 and obs.ndim == 3 and obs.shape[2] == 2
-    ks = split(key, num_mixtures.shape[0])
-    log_p = vmap(model.log_p)(num_mixtures, means, cov_terms, obs, ks)
-    return -log_p.mean()
+    batch_size = num_mixtures.shape[0]
+    ks = split(key, batch_size*2)
+    log_p = vmap(model.log_p)(num_mixtures, means, cov_terms, obs, ks[:batch_size])
+    
+    num_mixtures_hat, means_hat, _ = vmap(model.rsample)(
+        obs, ks[batch_size :], num_mixtures
+    )
+    
+    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
+                                                 num_mixtures=num_mixtures_hat)
+    assert obs_log_p.ndim==1 and log_p.ndim ==1
+    return (-log_p - obs_log_p).mean()
 
 
 @eqx.filter_jit
@@ -119,7 +128,7 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
         ks[: eval_size]
     )
     num_mixtures_hat, means_hat, cov_terms_hat = vmap(model.rsample)(
-        obs, ks[eval_size :]
+        obs, ks[eval_size :], num_mixtures
     )
     fit_num_mixtures = compare_discrete_samples(num_mixtures, num_mixtures_hat)
     # return dict(fit_num_mixtures=fit_num_mixtures)
@@ -128,10 +137,10 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
     ).mean()
     
     obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]), 
-                                             num_mixtures=num_mixtures).mean()
+                                             num_mixtures=num_mixtures)
     obs_log_p_hat = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
-                                                 num_mixtures=num_mixtures_hat).mean()
-    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_obs_log_p=obs_log_p-obs_log_p_hat)
+                                                 num_mixtures=num_mixtures_hat)
+    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_obs_log_p=(obs_log_p-obs_log_p_hat).mean())
     fit_covs = vmap(trunc_abs_distance, in_axes=(None, 0, 0, 0))(
         model.max_num_mixtures, num_mixtures, cov_terms, cov_terms_hat
     ).mean()
@@ -170,14 +179,14 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=3,
+        load_idx=1,
         evaluate_iters=10,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
 
     # optimization cfg
     c.virtual_batch_size = 200
-    c.num_virtual_batches = 2
+    c.num_virtual_batches = 1
     c.eval_size = 10000
     c.opt_c = AttrDict(
         max_lr=0.001,

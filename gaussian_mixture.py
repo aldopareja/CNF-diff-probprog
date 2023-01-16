@@ -98,11 +98,14 @@ def gaussian_mixture_log_p_single_obs(observation, means,cov_terms, num_mixtures
     
     num_mix_mask = jnp.where(
         jnp.arange(max_num_mixtures) <= num_mixtures,
-        jnp.ones((max_num_mixtures,)),
         jnp.zeros((max_num_mixtures,)),
+        jnp.stack([-jnp.inf]*max_num_mixtures),
+        # jnp.zeros((max_num_mixtures,)),
     )
     
-    log_p = jax.nn.logsumexp(normals_log_p * num_mix_mask)
+    assert normals_log_p.shape == num_mix_mask.shape
+    
+    log_p = jax.nn.logsumexp(normals_log_p + num_mix_mask)
     
     return log_p
 
@@ -187,10 +190,10 @@ class InferenceGaussianMixture(eqx.Module):
         encoded_obs = self.obs_encoder(obs, key=ks[2])
         assert encoded_obs.ndim == 1
 
-        mlp_ = self.num_mixtures_est(encoded_obs)
-        assert mlp_.ndim == 1
+        # mlp_ = self.num_mixtures_est(encoded_obs)
+        # assert mlp_.ndim == 1
     
-        num_mixtures_log_p = mlp_[num_mixtures] - jax.nn.logsumexp(mlp_)
+        # num_mixtures_log_p = mlp_[num_mixtures] - jax.nn.logsumexp(mlp_)
         
         # return 30*num_mixtures_log_p
         
@@ -202,7 +205,8 @@ class InferenceGaussianMixture(eqx.Module):
             z=means.reshape(-1), cond_vars=conds, key=ks[0]
         )
         
-        return 30*num_mixtures_log_p + means_log_p
+        # return 30*num_mixtures_log_p + means_log_p
+        return means_log_p
 
         conds = jnp.concatenate(
             [
@@ -217,14 +221,14 @@ class InferenceGaussianMixture(eqx.Module):
         #added a 30 multiplier to make the losses on the same order of magnitude
         return 30*num_mixtures_log_p + means_log_p + covs_log_p
 
-    def rsample(self, obs, key):
+    def rsample(self, obs, key, num_mixtures):
         ks = split(key, 4)
 
         encoded_obs = self.obs_encoder(obs, key=ks[0])
 
-        num_mixtures = tfd.Categorical(
-            logits=self.num_mixtures_est(encoded_obs)
-        ).sample(seed=ks[1])
+        # num_mixtures = tfd.Categorical(
+        #     logits=self.num_mixtures_est(encoded_obs)
+        # ).sample(seed=ks[1])
         
         # return num_mixtures, None, None
 
