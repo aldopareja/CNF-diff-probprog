@@ -47,7 +47,7 @@ def sample_observations(means, cov_matrices, class_label, k):
 def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
     ks = split(k, 5)
     num_mixtures = tfd.Categorical(
-        probs=jnp.ones((2,)) / 2
+        probs=jnp.ones((3,)) / 3
     ).sample(seed=ks[0])
     # num_mixtures = max_num_mixtures - 1
     # num_mixtures = 4
@@ -111,7 +111,7 @@ def gaussian_mixture_log_p_single_obs(observation, means,cov_terms, num_mixtures
 
 def gaussian_mixture_log_p(many_obs, means, cov_terms, num_mixtures, max_num_mixtures=6):
     assert many_obs.ndim == 2
-    return (vmap(gaussian_mixture_log_p_single_obs, in_axes=(0,None,None,None,None))(many_obs, means, cov_terms, num_mixtures, max_num_mixtures)).sum()
+    return (vmap(gaussian_mixture_log_p_single_obs, in_axes=(0,None,None,None,None))(many_obs, means, cov_terms, num_mixtures, max_num_mixtures)).mean()
 
     
 
@@ -190,12 +190,10 @@ class InferenceGaussianMixture(eqx.Module):
         encoded_obs = self.obs_encoder(obs, key=ks[2])
         assert encoded_obs.ndim == 1
 
-        # mlp_ = self.num_mixtures_est(encoded_obs)
-        # assert mlp_.ndim == 1
+        mlp_ = self.num_mixtures_est(encoded_obs)
+        assert mlp_.ndim == 1
     
-        # num_mixtures_log_p = mlp_[num_mixtures] - jax.nn.logsumexp(mlp_)
-        
-        # return 30*num_mixtures_log_p
+        num_mixtures_log_p = mlp_[num_mixtures] - jax.nn.logsumexp(mlp_)
         
         conds = jnp.concatenate(
             [encoded_obs, 
@@ -205,8 +203,8 @@ class InferenceGaussianMixture(eqx.Module):
             z=means.reshape(-1), cond_vars=conds, key=ks[0]
         )
         
-        # return 30*num_mixtures_log_p + means_log_p
-        return means_log_p
+        return num_mixtures_log_p + means_log_p
+        # return means_log_p
 
         conds = jnp.concatenate(
             [
@@ -221,14 +219,16 @@ class InferenceGaussianMixture(eqx.Module):
         #added a 30 multiplier to make the losses on the same order of magnitude
         return 30*num_mixtures_log_p + means_log_p + covs_log_p
 
-    def rsample(self, obs, key, num_mixtures):
+    def rsample(self, obs, key):
         ks = split(key, 4)
 
         encoded_obs = self.obs_encoder(obs, key=ks[0])
 
-        # num_mixtures = tfd.Categorical(
-        #     logits=self.num_mixtures_est(encoded_obs)
-        # ).sample(seed=ks[1])
+        num_mixtures = jax.lax.stop_gradient(
+            tfd.Categorical(
+                logits=self.num_mixtures_est(encoded_obs)
+                ).sample(seed=ks[1])
+        )
         
         # return num_mixtures, None, None
 

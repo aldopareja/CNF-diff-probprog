@@ -70,7 +70,7 @@ def loss(model: InferenceGaussianMixture, s_batch, key):
     log_p = vmap(model.log_p)(num_mixtures, means, cov_terms, obs, ks[:batch_size])
     
     num_mixtures_hat, means_hat, _ = vmap(model.rsample)(
-        obs, ks[batch_size :], num_mixtures
+        obs, ks[batch_size :]
     )
     
     obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
@@ -128,7 +128,7 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
         ks[: eval_size]
     )
     num_mixtures_hat, means_hat, cov_terms_hat = vmap(model.rsample)(
-        obs, ks[eval_size :], num_mixtures
+        obs, ks[eval_size :]
     )
     fit_num_mixtures = compare_discrete_samples(num_mixtures, num_mixtures_hat)
     # return dict(fit_num_mixtures=fit_num_mixtures)
@@ -179,21 +179,21 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=1,
+        load_idx=4,
         evaluate_iters=10,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
 
     # optimization cfg
-    c.virtual_batch_size = 200
+    c.virtual_batch_size = 250
     c.num_virtual_batches = 1
     c.eval_size = 10000
     c.opt_c = AttrDict(
-        max_lr=0.001,
-        num_steps=int(10000),
+        max_lr=0.0007,
+        num_steps=int(30000),
         pct_start=0.0001,
-        div_factor=1e1,
-        final_div_factor=2e1,
+        div_factor=1e0,
+        final_div_factor=2e0,
         weight_decay=0.0005,
         gradient_clipping=5.0,
     )
