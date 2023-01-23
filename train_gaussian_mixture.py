@@ -69,14 +69,15 @@ def loss(model: InferenceGaussianMixture, s_batch, key):
     ks = split(key, batch_size*2)
     log_p = vmap(model.log_p)(num_mixtures, means, cov_terms, obs, ks[:batch_size])
     
-    num_mixtures_hat, means_hat, _ = vmap(model.rsample)(
-        obs, ks[batch_size :]
-    )
+    # num_mixtures_hat, means_hat, _ = vmap(model.rsample)(
+    #     obs, ks[batch_size :]
+    # )
     
-    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
-                                                 num_mixtures=num_mixtures_hat)
-    assert obs_log_p.ndim==1 and log_p.ndim ==1
-    return (-log_p - obs_log_p).mean()
+    # obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
+                                                #  num_mixtures=num_mixtures_hat)
+    # assert obs_log_p.ndim==1 and log_p.ndim ==1
+    # return (-log_p - obs_log_p).mean()
+    return -log_p.mean()
 
 
 @eqx.filter_jit
@@ -169,28 +170,30 @@ if __name__ == "__main__":
         dropout_rate=0.1,
         num_mixtures_mlp_width=100,
         num_mixtures_mlp_depth=1,
-        flows_depth=3,
-        flows_num_augment=30,
+        flows_num_blocks=8,
+        flows_num_layers_per_block=1,
+        flows_num_augment=120,
         num_enc_layers=4
     )
+    
 
     # logging and checkpointing
     c.log_chk = AttrDict(
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=4,
+        load_idx=1,
         evaluate_iters=10,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
 
     # optimization cfg
-    c.virtual_batch_size = 250
+    c.virtual_batch_size = 400
     c.num_virtual_batches = 1
     c.eval_size = 10000
     c.opt_c = AttrDict(
         max_lr=0.0007,
-        num_steps=int(30000),
+        num_steps=int(120000),
         pct_start=0.0001,
         div_factor=1e0,
         final_div_factor=2e0,

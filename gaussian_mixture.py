@@ -12,6 +12,7 @@ tfd = tfp.distributions
 
 from encoder import Encoder, EncoderCfg
 from cnf import CNF
+from real_nvp import RealNVP_Flow
 
 
 def build_cov_matrices(t, dims, eps=1e-5):
@@ -47,7 +48,7 @@ def sample_observations(means, cov_matrices, class_label, k):
 def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
     ks = split(k, 5)
     num_mixtures = tfd.Categorical(
-        probs=jnp.ones((3,)) / 3
+        probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     ).sample(seed=ks[0])
     # num_mixtures = max_num_mixtures - 1
     # num_mixtures = 4
@@ -118,7 +119,7 @@ def gaussian_mixture_log_p(many_obs, means, cov_terms, num_mixtures, max_num_mix
 class InferenceGaussianMixture(eqx.Module):
     obs_encoder: Encoder
     means_flow: CNF
-    cov_flow: CNF
+    cov_flow: RealNVP_Flow
     num_mixtures_est: eqx.nn.MLP
     dims: eqx.static_field()
     max_num_mixtures: eqx.static_field()
@@ -134,8 +135,9 @@ class InferenceGaussianMixture(eqx.Module):
         dropout_rate=0.1,
         num_mixtures_mlp_width=128,
         num_mixtures_mlp_depth=2,
-        flows_depth=3,
-        flows_num_augment=30,
+        flows_num_blocks=8,
+        flows_num_layers_per_block=1,
+        flows_num_augment=90,
         num_enc_layers=4,
     ):
         ks = split(key, 10)
@@ -159,14 +161,23 @@ class InferenceGaussianMixture(eqx.Module):
             key=ks[1],
         )
 
-        self.means_flow = CNF(
-            num_latents=max_num_mixtures * dims,
+        # self.means_flow = CNF(
+        #     num_latents=max_num_mixtures * dims,
+        #     num_augments=flows_num_augment,
+        #     num_conds=d_model + int(d_model/2),  # the encoded observations plus K repeated d_model/2 times
+        #     width_size=d_model * 2,
+        #     depth=flows_depth,
+        #     key=ks[2],
+        #     num_blocks=1,
+        # )
+        self.means_flow = RealNVP_Flow(
+            num_blocks = flows_num_blocks,
+            num_layers_per_block= flows_num_layers_per_block,
+            block_hidden_size=d_model,
             num_augments=flows_num_augment,
-            num_conds=d_model + int(d_model/2),  # the encoded observations plus K repeated d_model/2 times
-            width_size=d_model * 2,
-            depth=flows_depth,
-            key=ks[2],
-            num_blocks=1,
+            num_latents = max_num_mixtures * dims,
+            num_conds = d_model + int(d_model/2),
+            key = ks[2]
         )
 
         self.cov_flow = CNF(
@@ -174,7 +185,7 @@ class InferenceGaussianMixture(eqx.Module):
             num_augments=flows_num_augment,
             num_conds=d_model + int(d_model/2) + max_num_mixtures * dims,
             width_size=d_model * 2,
-            depth=flows_depth,
+            depth=3,
             key=ks[3],
             num_blocks=1,
         )
