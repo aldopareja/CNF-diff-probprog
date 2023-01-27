@@ -4,8 +4,17 @@ from jax import vmap
 from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
+import optax
+
 import equinox as eqx
 
+def standardize(a,mu,std):
+  assert jnp.array(mu).ndim == 0 and jnp.array(std).ndim == 0
+  return (a - mu)/std
+
+def unstandardize(a,mu,std):
+  assert jnp.array(mu).ndim == 0 and jnp.array(std).ndim == 0
+  return a*std + mu
 
 def augment_sample(k: PRNGKey, s, num_augment):
     new_s = jnp.concatenate(
@@ -50,3 +59,23 @@ def compare_discrete_samples(y1,y2):
     jnp.ones((y1.shape[0],)), 
     jnp.zeros((y1.shape[0]))
   ).sum()/y1.shape[0]
+  
+def initialize_optim(optim_cfg, model):
+    c = optim_cfg
+    optim = optax.chain(
+        optax.clip_by_global_norm(c.gradient_clipping),
+        optax.adamw(
+            learning_rate=optax.cosine_onecycle_schedule(
+                c.num_steps,
+                c.max_lr,
+                c.pct_start,
+                c.div_factor,
+                c.final_div_factor,
+            ),
+            weight_decay=c.weight_decay,
+        ),
+    )
+
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+
+    return optim, opt_state

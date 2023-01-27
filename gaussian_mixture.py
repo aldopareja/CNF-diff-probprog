@@ -35,29 +35,27 @@ def build_cov_matrices(t, dims, eps=1e-5):
 
 
 def sample_observations(means, cov_matrices, class_label, k):
-    # s = tfd.MultivariateNormalTriL(
-    #     loc=means[class_label], scale_tril=cov_matrices[class_label]
-    # ).sample(seed=k)
-    s = tfd.MultivariateNormalDiag(
-        loc=means[class_label],
-        scale_diag=jnp.ones_like(means[class_label])/50.0
-        ).sample(seed=k)
+    s = tfd.MultivariateNormalTriL(
+        loc=means[class_label], scale_tril=cov_matrices[class_label]
+    ).sample(seed=k)
+    # s = tfd.MultivariateNormalDiag(
+    #     loc=means[class_label],
+    #     scale_diag=jnp.ones_like(means[class_label])/50.0
+    #     ).sample(seed=k)
     return s
 
 
-def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=100):
+def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=200):
     ks = split(k, 5)
     num_mixtures = tfd.Categorical(
         probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     ).sample(seed=ks[0])
-    # num_mixtures = max_num_mixtures - 1
-    # num_mixtures = 4
 
     means = tfd.Uniform(low=-1.0, high=1.0).sample(
         seed=ks[1], sample_shape=(max_num_mixtures, dims)
     )
 
-    cov_terms = tfd.Uniform(low=0.01, high=1.0).sample(
+    cov_terms = tfd.Uniform(low=0.02, high=0.5).sample(
         seed=ks[2], sample_shape=(max_num_mixtures, int(dims * (dims + 1) / 2))
     )
     cov_matrices = build_cov_matrices(cov_terms, dims, max_num_mixtures)
@@ -118,8 +116,7 @@ def gaussian_mixture_log_p(many_obs, means, cov_terms, num_mixtures, max_num_mix
 
 class InferenceGaussianMixture(eqx.Module):
     obs_encoder: Encoder
-    means_flow: CNF
-    cov_flow: RealNVP_Flow
+    flow: RealNVP_Flow
     num_mixtures_est: eqx.nn.MLP
     dims: eqx.static_field()
     max_num_mixtures: eqx.static_field()
@@ -161,33 +158,14 @@ class InferenceGaussianMixture(eqx.Module):
             key=ks[1],
         )
 
-        # self.means_flow = CNF(
-        #     num_latents=max_num_mixtures * dims,
-        #     num_augments=flows_num_augment,
-        #     num_conds=d_model + int(d_model/2),  # the encoded observations plus K repeated d_model/2 times
-        #     width_size=d_model * 2,
-        #     depth=flows_depth,
-        #     key=ks[2],
-        #     num_blocks=1,
-        # )
-        self.means_flow = RealNVP_Flow(
+        self.flow = RealNVP_Flow(
             num_blocks = flows_num_blocks,
             num_layers_per_block= flows_num_layers_per_block,
             block_hidden_size=d_model,
             num_augments=flows_num_augment,
-            num_latents = max_num_mixtures * dims,
+            num_latents = max_num_mixtures * dims + int(max_num_mixtures * dims * (dims + 1) / 2),
             num_conds = d_model + int(d_model/2),
             key = ks[2]
-        )
-
-        self.cov_flow = CNF(
-            num_latents=int(max_num_mixtures * dims * (dims + 1) / 2),
-            num_augments=flows_num_augment,
-            num_conds=d_model + int(d_model/2) + max_num_mixtures * dims,
-            width_size=d_model * 2,
-            depth=3,
-            key=ks[3],
-            num_blocks=1,
         )
 
         self.dims = dims
@@ -210,25 +188,14 @@ class InferenceGaussianMixture(eqx.Module):
             [encoded_obs, 
              jnp.repeat(jnp.float32(num_mixtures)/5.0 - 0.5, int(self.d_model/2))]
         )
-        means_log_p = self.means_flow.log_p(
-            z=means.reshape(-1), cond_vars=conds, key=ks[0]
+        
+        z = jnp.concatenate([means.reshape(-1), cov_terms.reshape(-1)])
+        
+        gmm_log_p = self.flow.log_p(
+            z=z, cond_vars=conds, key=ks[0]
         )
         
-        return num_mixtures_log_p + means_log_p
-        # return means_log_p
-
-        conds = jnp.concatenate(
-            [
-                conds,
-                means.reshape(-1),
-            ]
-        )
-
-        covs_log_p = self.cov_flow.log_p(
-            z=cov_terms.reshape(-1), cond_vars=conds, key=ks[1]
-        )
-        #added a 30 multiplier to make the losses on the same order of magnitude
-        return 30*num_mixtures_log_p + means_log_p + covs_log_p
+        return num_mixtures_log_p + gmm_log_p
 
     def rsample(self, obs, key):
         ks = split(key, 4)
@@ -240,26 +207,22 @@ class InferenceGaussianMixture(eqx.Module):
                 logits=self.num_mixtures_est(encoded_obs)
                 ).sample(seed=ks[1])
         )
-        
-        # return num_mixtures, None, None
 
         conds = jnp.concatenate(
             [encoded_obs, 
              jnp.repeat(jnp.float32(num_mixtures)/5.0 - 0.5, int(self.d_model/2))]
         )
 
-        means = self.means_flow.rsample(ks[2], conds)
-
-        # conds = jnp.concatenate([conds, means])
-
-        # cov_terms = self.cov_flow.rsample(ks[3], conds)
+        gmm_params = self.flow.rsample(ks[2], conds)
+        
+        means = gmm_params[:self.max_num_mixtures * self.dims]
+        cov_terms = gmm_params[self.max_num_mixtures * self.dims:]
 
         means = means.reshape(self.max_num_mixtures, self.dims)
-        # cov_terms = cov_terms.reshape(
-        #     self.max_num_mixtures, int(self.dims * (self.dims + 1) / 2)
-        # )
-        return num_mixtures, means, None
-        # return num_mixtures, means, cov_terms
+        cov_terms = cov_terms.reshape(
+            self.max_num_mixtures, int(self.dims * (self.dims + 1) / 2)
+        )
+        return num_mixtures, means, cov_terms
 
 
 if __name__ == "__main__":

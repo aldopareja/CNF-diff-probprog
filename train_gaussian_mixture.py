@@ -23,7 +23,7 @@ from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
 
-from utils import AttrDict, compare_discrete_samples
+from utils import AttrDict, compare_discrete_samples, initialize_optim
 from gaussian_mixture import gaussian_mixture, InferenceGaussianMixture, gaussian_mixture_log_p
 
 
@@ -38,27 +38,6 @@ def initialize_model(
         m = eqx.tree_deserialise_leaves(p, m)
 
     return m
-
-
-def initialize_optim(optim_cfg, model):
-    c = optim_cfg
-    optim = optax.chain(
-        optax.clip_by_global_norm(c.gradient_clipping),
-        optax.adamw(
-            learning_rate=optax.cosine_onecycle_schedule(
-                c.num_steps,
-                c.max_lr,
-                c.pct_start,
-                c.div_factor,
-                c.final_div_factor,
-            ),
-            weight_decay=c.weight_decay,
-        ),
-    )
-
-    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-
-    return optim, opt_state
 
 
 @eqx.filter_value_and_grad
@@ -137,18 +116,16 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
         model.max_num_mixtures, num_mixtures, means, means_hat
     ).mean()
     
-    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]), 
-                                             num_mixtures=num_mixtures)
-    obs_log_p_hat = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
-                                                 num_mixtures=num_mixtures_hat)
-    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_obs_log_p=(obs_log_p-obs_log_p_hat).mean())
     fit_covs = vmap(trunc_abs_distance, in_axes=(None, 0, 0, 0))(
         model.max_num_mixtures, num_mixtures, cov_terms, cov_terms_hat
     ).mean()
+    
+    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means, cov_terms=cov_terms, 
+                                             num_mixtures=num_mixtures)
+    obs_log_p_hat = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=cov_terms_hat,
+                                                 num_mixtures=num_mixtures_hat)
 
-    return dict(
-        fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_covs=fit_covs
-    )
+    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_covs=fit_covs, fit_obs_log_p=(obs_log_p-obs_log_p_hat).mean())
 
 
 if __name__ == "__main__":
@@ -172,7 +149,7 @@ if __name__ == "__main__":
         num_mixtures_mlp_depth=1,
         flows_num_blocks=8,
         flows_num_layers_per_block=1,
-        flows_num_augment=120,
+        flows_num_augment=180,
         num_enc_layers=4
     )
     
@@ -182,18 +159,18 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=1,
-        evaluate_iters=10,
+        load_idx=10,
+        evaluate_iters=100,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
 
     # optimization cfg
-    c.virtual_batch_size = 400
-    c.num_virtual_batches = 1
+    c.virtual_batch_size = 200
+    c.num_virtual_batches = 2
     c.eval_size = 10000
     c.opt_c = AttrDict(
         max_lr=0.0007,
-        num_steps=int(120000),
+        num_steps=int(240000),
         pct_start=0.0001,
         div_factor=1e0,
         final_div_factor=2e0,
