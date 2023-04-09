@@ -29,9 +29,9 @@ def build_cov_matrices(t, dims, eps=1e-5):
     # t = jnp.triu(t)
     t = tfp.math.fill_triangular(t)
 
-    # eps_I = jnp.eye(dims)[None] * eps
+    eps_I = jnp.eye(dims)[None] * eps
     # cov_matrices = jnp.matmul(t, t.swapaxes(-2, -1)) + eps_I
-    return t
+    return t + eps_I
 
 
 def sample_observations(means, cov_matrices, class_label, k):
@@ -55,7 +55,7 @@ def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=200):
         seed=ks[1], sample_shape=(max_num_mixtures, dims)
     )
 
-    cov_terms = tfd.Uniform(low=0.02, high=0.5).sample(
+    cov_terms = tfd.Uniform(low=-0.5, high=0.5).sample(
         seed=ks[2], sample_shape=(max_num_mixtures, int(dims * (dims + 1) / 2))
     )
     cov_matrices = build_cov_matrices(cov_terms, dims, max_num_mixtures)
@@ -95,22 +95,28 @@ def gaussian_mixture_log_p_single_obs(observation, means,cov_terms, num_mixtures
         loc=means, scale_tril=cov_matrices
     ).log_prob(observation)
     
-    num_mix_mask = jnp.where(
-        jnp.arange(max_num_mixtures) <= num_mixtures,
-        jnp.zeros((max_num_mixtures,)),
-        jnp.stack([-jnp.inf]*max_num_mixtures),
-        # jnp.zeros((max_num_mixtures,)),
-    )
+    # num_mix_mask = jnp.where(
+    #     jnp.arange(max_num_mixtures) <= num_mixtures,
+    #     jnp.zeros((max_num_mixtures,)),
+    #     jnp.stack([-jnp.inf]*max_num_mixtures),
+    #     # jnp.zeros((max_num_mixtures,)),
+    # )
     
-    assert normals_log_p.shape == num_mix_mask.shape
+    # assert normals_log_p.shape == num_mix_mask.shape
     
-    log_p = jax.nn.logsumexp(normals_log_p + num_mix_mask)
+    # log_p = jax.nn.logsumexp(normals_log_p + num_mix_mask)
+    
+    log_p = jnp.where(jnp.arange(max_num_mixtures)<=num_mixtures,
+                      normals_log_p,
+                      0.0).sum()
     
     return log_p
 
 def gaussian_mixture_log_p(many_obs, means, cov_terms, num_mixtures, max_num_mixtures=6):
     assert many_obs.ndim == 2
-    return (vmap(gaussian_mixture_log_p_single_obs, in_axes=(0,None,None,None,None))(many_obs, means, cov_terms, num_mixtures, max_num_mixtures)).mean()
+    return (vmap(gaussian_mixture_log_p_single_obs, in_axes=(0,None,None,None,None))(
+        many_obs, means, cov_terms, num_mixtures, max_num_mixtures)
+            ).mean()
 
     
 

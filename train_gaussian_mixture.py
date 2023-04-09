@@ -48,14 +48,16 @@ def loss(model: InferenceGaussianMixture, s_batch, key):
     ks = split(key, batch_size*2)
     log_p = vmap(model.log_p)(num_mixtures, means, cov_terms, obs, ks[:batch_size])
     
-    # num_mixtures_hat, means_hat, _ = vmap(model.rsample)(
-    #     obs, ks[batch_size :]
-    # )
+    num_mixtures_hat, means_hat, cov_terms_hat = vmap(model.rsample)(
+        obs, ks[batch_size :]
+    )
+    obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=cov_terms_hat, num_mixtures=num_mixtures_hat)
+    obs_log_p = jnp.where(jnp.isnan(obs_log_p),
+                          jnp.zeros((batch_size,)),
+                          obs_log_p)
     
-    # obs_log_p = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=jnp.stack([jnp.stack([jnp.array([1.0,0.0,1.0])]*6)/(50)]*obs.shape[0]),
-                                                #  num_mixtures=num_mixtures_hat)
-    # assert obs_log_p.ndim==1 and log_p.ndim ==1
-    # return (-log_p - obs_log_p).mean()
+    assert obs_log_p.ndim==1 and log_p.ndim ==1
+    # return (-log_p - 0.01 * obs_log_p).mean()
     return -log_p.mean()
 
 
@@ -125,7 +127,7 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
     obs_log_p_hat = vmap(gaussian_mixture_log_p)(obs, means=means_hat, cov_terms=cov_terms_hat,
                                                  num_mixtures=num_mixtures_hat)
 
-    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_covs=fit_covs, fit_obs_log_p=(obs_log_p-obs_log_p_hat).mean())
+    return dict(fit_num_mixtures=fit_num_mixtures, fit_means=fit_means, fit_covs=fit_covs, fit_obs_log_p=jax.numpy.abs(obs_log_p-obs_log_p_hat).mean())
 
 
 if __name__ == "__main__":
@@ -159,7 +161,7 @@ if __name__ == "__main__":
         save_params=50,
         print_every=50,
         chkpt_folder="gaussian_mixture_chkpts/",
-        load_idx=10,
+        load_idx=None,
         evaluate_iters=100,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
@@ -169,11 +171,11 @@ if __name__ == "__main__":
     c.num_virtual_batches = 2
     c.eval_size = 10000
     c.opt_c = AttrDict(
-        max_lr=0.0007,
-        num_steps=int(240000),
+        max_lr=0.0001,
+        num_steps=int(500000),
         pct_start=0.0001,
         div_factor=1e0,
-        final_div_factor=2e0,
+        final_div_factor=3e0,
         weight_decay=0.0005,
         gradient_clipping=5.0,
     )
