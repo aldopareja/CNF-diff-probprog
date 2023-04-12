@@ -62,20 +62,22 @@ def compare_discrete_samples(y1,y2):
   
 def initialize_optim(optim_cfg, model):
     c = optim_cfg
-    optim = optax.chain(
-        optax.clip_by_global_norm(c.gradient_clipping),
-        optax.adamw(
-            learning_rate=optax.cosine_onecycle_schedule(
+    schedule = optax.cosine_onecycle_schedule(
                 c.num_steps,
                 c.max_lr,
                 c.pct_start,
                 c.div_factor,
                 c.final_div_factor,
-            ),
+            )
+      
+    optim = optax.chain(
+        optax.clip_by_global_norm(c.gradient_clipping),
+        optax.adamw(
+            learning_rate=schedule,
             weight_decay=c.weight_decay,
         ),
     )
 
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-    return optim, opt_state
+    return optim, opt_state, schedule

@@ -44,21 +44,25 @@ def sample_observations(means, cov_matrices, class_label, k):
     #     ).sample(seed=k)
     return s
 
-
 def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=200):
     ks = split(k, 5)
     num_mixtures = tfd.Categorical(
         probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     ).sample(seed=ks[0])
+    # num_mixtures = tfd.Categorical(
+    #     probs=jnp.ones((3,)) / 3
+    # ).sample(seed=ks[0])
+    # num_mixtures = 3
 
     means = tfd.Uniform(low=-1.0, high=1.0).sample(
         seed=ks[1], sample_shape=(max_num_mixtures, dims)
     )
 
-    cov_terms = tfd.Uniform(low=-0.5, high=0.5).sample(
+    cov_terms = tfd.Uniform(low=-0.2, high=0.2).sample(
         seed=ks[2], sample_shape=(max_num_mixtures, int(dims * (dims + 1) / 2))
     )
-    cov_matrices = build_cov_matrices(cov_terms, dims, max_num_mixtures)
+    # cov_terms = jnp.array([[1.0,0.0,1.0],]*6)/10.0
+    cov_matrices = build_cov_matrices(cov_terms, dims)
 
     class_labels_probs = jnp.where(
         jnp.arange(max_num_mixtures) <= num_mixtures,
@@ -201,7 +205,7 @@ class InferenceGaussianMixture(eqx.Module):
             z=z, cond_vars=conds, key=ks[0]
         )
         
-        return num_mixtures_log_p + gmm_log_p
+        return num_mixtures_log_p #+ gmm_log_p
 
     def rsample(self, obs, key):
         ks = split(key, 4)

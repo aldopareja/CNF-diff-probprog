@@ -9,6 +9,7 @@ This was taken from section 4.1 of [1]
 
 [1] Weilbach, C., Beronov, B., Wood, F.D., & Harvey, W. (2020). Structured Conditional Continuous Normalizing Flows for Efficient Amortized Inference in Graphical Models. AISTATS.
 """
+import os
 from pathlib import Path
 import time
 import math
@@ -160,22 +161,24 @@ if __name__ == "__main__":
     c.log_chk = AttrDict(
         save_params=50,
         print_every=50,
-        chkpt_folder="gaussian_mixture_chkpts/",
+        chkpt_folder="gaussian_mixture_chkpts_only_num_mix/",
         load_idx=None,
         evaluate_iters=100,
     )
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
+    if not os.path.exists(c.log_chk.chkpt_folder):
+        os.makedirs(c.log_chk.chkpt_folder)
 
     # optimization cfg
-    c.virtual_batch_size = 200
-    c.num_virtual_batches = 2
+    c.virtual_batch_size = 50
+    c.num_virtual_batches = 1
     c.eval_size = 10000
     c.opt_c = AttrDict(
-        max_lr=0.0001,
-        num_steps=int(500000),
+        max_lr=0.00035,
+        num_steps=int(100000),
         pct_start=0.0001,
         div_factor=1e0,
-        final_div_factor=3e0,
+        final_div_factor=1e1,
         weight_decay=0.0005,
         gradient_clipping=5.0,
     )
@@ -188,7 +191,7 @@ if __name__ == "__main__":
         chkpt_folder=c.log_chk.chkpt_folder,
     )
 
-    optim, opt_state = initialize_optim(c.opt_c, m)
+    optim, opt_state, schedule = initialize_optim(c.opt_c, m)
 
     for i in range(c.opt_c.num_steps):
         start = time.time()
@@ -213,9 +216,14 @@ if __name__ == "__main__":
             m = eqx.tree_inference(m, value=True)
             log = evaluate(m, sk, c.eval_size)
             m = eqx.tree_inference(m, value=False)
+            
+            log["learning_rate"] = schedule(i)
+            
             log = jax.tree_util.tree_map(lambda x: x.item(), log)
             end = time.time()
+            
             log["batch"] = i
+            log["Step"] = i
             log["time_eval"] = end - start
             wandb.log(log)
             print(log)
