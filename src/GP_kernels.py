@@ -1,7 +1,8 @@
 import numpyro as npy
+from numpyro import distributions as dist
 from jax import numpy as jnp
 import equinox as eqx
-from jax import jit
+from jax import jit, vmap
 from jax.random import PRNGKey, split
 
 
@@ -48,7 +49,7 @@ def sample_kernel(key: PRNGKey, address_prefix=""):
             npy.distributions.InverseGamma(2.0, 1.0),
             rng_key=ks[1],
         )
-        return LinearKernel(bias=bias)
+        return LinearKernel(bias=bias.item())
     elif idx == 1.0:
         lenght_scale = npy.sample(
             f"{address_prefix}lenght_scale",
@@ -61,7 +62,7 @@ def sample_kernel(key: PRNGKey, address_prefix=""):
             rng_key=ks[2],
         )
         return RationalQuadraticKernel(
-            lenght_scale=lenght_scale, scale_mixture=scale_mixture
+            lenght_scale=lenght_scale.item(), scale_mixture=scale_mixture.item()
         )
     elif idx == 2.0:
         return sum_kernels(
@@ -73,3 +74,24 @@ def sample_kernel(key: PRNGKey, address_prefix=""):
             sample_kernel(ks[1], address_prefix=f"{address_prefix}leftchild_"),
             sample_kernel(ks[2], address_prefix=f"{address_prefix}rightchild_"),
         )
+        
+def sample_observations(key:PRNGKey, kernel_fn, num:int) -> jnp.ndarray:
+  ks = split(key, 2)
+  x_ = dist.Uniform(0, 1).sample(ks[0],sample_shape=(num,))
+  x = npy.sample('x', dist.Uniform(0, 1), sample_shape=(num,), obs=x_)
+  
+  cov = vmap(vmap(kernel_fn, in_axes=(None, 0)), in_axes=(0, None))(x, x)
+  
+  y = dist.MultivariateNormal(loc=jnp.zeros(num), covariance_matrix=cov).sample(ks[1])
+  y = npy.sample('y', dist.MultivariateNormal(loc=jnp.zeros(num), covariance_matrix=cov), obs=y)
+  return x,y
+
+def model(key:PRNGKey):
+  ks = split(key, 2)
+  kernel = jit(sample_kernel(ks[0]))
+  return sample_observations(ks[1], kernel, 100)
+
+if __name__ == '__main__':
+  x,y = model(PRNGKey(0))
+  
+  
