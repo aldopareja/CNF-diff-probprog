@@ -17,6 +17,7 @@ class EncoderCfg:
   d_model: int = 52
   num_input_variables: int = 2
   num_enc_layers: int = 2
+  num_output_embs: int = 2
   
   
 class EncoderLayer(eqx.Module):
@@ -62,9 +63,10 @@ class EncoderLayer(eqx.Module):
     
 class Encoder(eqx.Module):
   obs_to_embed: eqx.nn.Linear
-  summary_token: Array
+  summary_tokens: Array
   enc_layers: List[EncoderLayer]
   num_input_vars: eqx.static_field()
+  num_output_embs: eqx.static_field()
   
   def __init__(self, *, key:PRNGKey, c:EncoderCfg):
     ks = split(key,10)
@@ -75,21 +77,22 @@ class Encoder(eqx.Module):
       )
     
     lim = 1 / math.sqrt(c.d_model)
-    self.summary_token = uniform(ks[1], (1,c.d_model), minval=-lim, maxval=lim)
+    self.summary_tokens = uniform(ks[1], (c.num_output_embs ,c.d_model), minval=-lim, maxval=lim)
     
     self.enc_layers = [EncoderLayer(key=ks[2],c=c) for _ in range(c.num_enc_layers)]
     self.num_input_vars = c.num_input_variables
+    self.num_output_embs = c.num_output_embs
     
   def __call__(self,x,*,key):
     assert x.ndim == 2 and x.shape[1] == self.num_input_vars
     ks = split(key, len(self.enc_layers))
     x = vmap(self.obs_to_embed)(x)
-    x = jnp.concatenate([x,self.summary_token])
+    x = jnp.concatenate([x,self.summary_tokens])
     
     for i,enc in enumerate(self.enc_layers):
       x = enc(x,key=ks[i])
       
-    return x[-1]
+    return x[-self.num_output_embs:]
     
 if __name__ == "__main__":
   m = Encoder(key=PRNGKey(0), c=EncoderCfg())

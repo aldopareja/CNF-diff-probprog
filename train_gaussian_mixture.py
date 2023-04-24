@@ -134,8 +134,7 @@ def evaluate(model: InferenceGaussianMixture, key, eval_size):
 if __name__ == "__main__":
     import wandb
 
-    wandb.login()
-    wandb.init(project="gaussian_mixture_network")
+    
 
     c = AttrDict()
     c.key = PRNGKey(574)
@@ -161,10 +160,12 @@ if __name__ == "__main__":
     c.log_chk = AttrDict(
         save_params=50,
         print_every=50,
-        chkpt_folder="gaussian_mixture_chkpts_only_num_mix/",
+        chkpt_folder="gaussian_mixture_many_out_embs_6_mixtures/",
         load_idx=None,
         evaluate_iters=100,
     )
+    wandb.login()
+    wandb.init(project="gaussian_mixture_network", notes="many_out_embs_6_mixtures")
     save_idx = c.log_chk.load_idx + 1 if c.log_chk.load_idx is not None else 0
     if not os.path.exists(c.log_chk.chkpt_folder):
         os.makedirs(c.log_chk.chkpt_folder)
@@ -174,8 +175,8 @@ if __name__ == "__main__":
     c.num_virtual_batches = 1
     c.eval_size = 10000
     c.opt_c = AttrDict(
-        max_lr=0.00035,
-        num_steps=int(100000),
+        max_lr=0.0004,
+        num_steps=int(2e5),
         pct_start=0.0001,
         div_factor=1e0,
         final_div_factor=1e1,

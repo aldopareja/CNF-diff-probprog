@@ -46,12 +46,12 @@ def sample_observations(means, cov_matrices, class_label, k):
 
 def gaussian_mixture(k: PRNGKey, *, max_num_mixtures=6, dims=2, num_obs=200):
     ks = split(k, 5)
-    num_mixtures = tfd.Categorical(
-        probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
-    ).sample(seed=ks[0])
     # num_mixtures = tfd.Categorical(
-    #     probs=jnp.ones((3,)) / 3
+    #     probs=jnp.ones((max_num_mixtures,)) / max_num_mixtures
     # ).sample(seed=ks[0])
+    num_mixtures = tfd.Categorical(
+        probs=jnp.ones((3,)) / 3
+    ).sample(seed=ks[0])
     # num_mixtures = 3
 
     means = tfd.Uniform(low=-1.0, high=1.0).sample(
@@ -157,6 +157,7 @@ class InferenceGaussianMixture(eqx.Module):
                 d_model=d_model,
                 num_input_variables=dims,
                 num_enc_layers=num_enc_layers,
+                num_output_embs=2,
             ),
         )
 
@@ -186,16 +187,16 @@ class InferenceGaussianMixture(eqx.Module):
         ks = split(key, 3)
         assert obs.ndim == 2 and num_mixtures.dtype == jnp.int32 and num_mixtures.ndim==0
 
-        encoded_obs = self.obs_encoder(obs, key=ks[2])
-        assert encoded_obs.ndim == 1
+        mlp_emb, flow_emb = self.obs_encoder(obs, key=ks[2])
+        assert mlp_emb.ndim == 1
 
-        mlp_ = self.num_mixtures_est(encoded_obs)
+        mlp_ = self.num_mixtures_est(mlp_emb)
         assert mlp_.ndim == 1
     
         num_mixtures_log_p = mlp_[num_mixtures] - jax.nn.logsumexp(mlp_)
         
         conds = jnp.concatenate(
-            [encoded_obs, 
+            [flow_emb, 
              jnp.repeat(jnp.float32(num_mixtures)/5.0 - 0.5, int(self.d_model/2))]
         )
         
@@ -205,21 +206,21 @@ class InferenceGaussianMixture(eqx.Module):
             z=z, cond_vars=conds, key=ks[0]
         )
         
-        return num_mixtures_log_p #+ gmm_log_p
+        return num_mixtures_log_p + gmm_log_p
 
     def rsample(self, obs, key):
         ks = split(key, 4)
 
-        encoded_obs = self.obs_encoder(obs, key=ks[0])
+        mlp_emb, flow_emb = self.obs_encoder(obs, key=ks[0])
 
         num_mixtures = jax.lax.stop_gradient(
             tfd.Categorical(
-                logits=self.num_mixtures_est(encoded_obs)
+                logits=self.num_mixtures_est(mlp_emb)
                 ).sample(seed=ks[1])
         )
 
         conds = jnp.concatenate(
-            [encoded_obs, 
+            [flow_emb, 
              jnp.repeat(jnp.float32(num_mixtures)/5.0 - 0.5, int(self.d_model/2))]
         )
 
