@@ -24,7 +24,7 @@ from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
 
-from utils import AttrDict, compare_discrete_samples, initialize_optim
+from src.utils import AttrDict, compare_discrete_samples, initialize_optim
 from gaussian_mixture import gaussian_mixture, InferenceGaussianMixture, gaussian_mixture_log_p
 
 

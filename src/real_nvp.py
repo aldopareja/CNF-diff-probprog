@@ -1,7 +1,7 @@
 from typing import List
 
 import jax
-from jax import numpy as jnp
+from jax import jit, numpy as jnp
 from jax.random import PRNGKey, split
 from jaxtyping import Array
 
@@ -10,7 +10,7 @@ tfd = tfp.distributions
 
 import equinox as eqx
 
-from utils import augment_sample
+from src.utils.miscellaneous import augment_sample
 
 
 def concat_elu(x):
@@ -142,6 +142,7 @@ class RealNVP_Flow(eqx.Module):
     self.num_latents = num_latents
     self.num_augments = num_augments
     
+  # @eqx.filter_jit
   def log_p(self, z, cond_vars, key):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
     z_aug = augment_sample(key, z, self.num_augments)
@@ -155,6 +156,7 @@ class RealNVP_Flow(eqx.Module):
     
     return log_prob
   
+  @eqx.filter_jit
   def rsample(self, key, cond_vars):
     z = tfd.Normal(0, 1).sample(
       seed = key, sample_shape=(self.num_latents + self.num_augments,)

@@ -4,7 +4,7 @@ from typing import List
 import math
 
 import jax
-from jax import vmap
+from jax import vmap, jit
 from jax import numpy as jnp
 from jax.random import split, PRNGKey, uniform
 import equinox as eqx
@@ -17,7 +17,8 @@ class EncoderCfg:
   d_model: int = 52
   num_input_variables: int = 2
   num_enc_layers: int = 2
-  num_output_embs: int = 2
+  max_latents: int = 100
+  num_observations: int = 100
   
   
 class EncoderLayer(eqx.Module):
@@ -25,6 +26,8 @@ class EncoderLayer(eqx.Module):
   layer_norms: List[eqx.nn.LayerNorm]
   mlp: eqx.nn.MLP
   dropout: eqx.nn.Dropout
+  num_heads: eqx.static_field()
+  
   
   def __init__(self, *, key, c:EncoderCfg):
     ks = split(key, 3)
@@ -43,14 +46,20 @@ class EncoderLayer(eqx.Module):
     )
     self.layer_norms = [eqx.nn.LayerNorm(c.d_model,) for _ in range(2)]
     self.dropout = eqx.nn.Dropout(p=c.dropout_rate)
+    self.num_heads = c.num_heads
     
-  def __call__(self,x,*,key):
+    
+  def __call__(self,x,*,key, mask):
     assert x.ndim == 2 and x.shape[1] == self.layer_norms[0].shape
+    assert mask.ndim == 1 and mask.shape[0] == x.shape[0]
     ks = split(key,3)
     
-    x_ = self.multihead_Attention(x,x,x,key=ks[0])
+    mask_mha =  jnp.broadcast_to(mask,(self.num_heads,x.shape[0],x.shape[0]))
+    x_ = self.multihead_Attention(x,x,x,mask=mask_mha,key=ks[0])
     
     x_ = self.dropout(x_,key=ks[2])
+    
+    # x = vmap(jnp.multiply)(x,mask) + x_
     x = x + x_
     x = vmap(self.layer_norms[0])(x)
     
@@ -63,10 +72,10 @@ class EncoderLayer(eqx.Module):
     
 class Encoder(eqx.Module):
   obs_to_embed: eqx.nn.Linear
-  summary_tokens: Array
   enc_layers: List[EncoderLayer]
+  latent_input_embeddings: Array
   num_input_vars: eqx.static_field()
-  num_output_embs: eqx.static_field()
+  num_observations: eqx.static_field()
   
   def __init__(self, *, key:PRNGKey, c:EncoderCfg):
     ks = split(key,10)
@@ -77,22 +86,25 @@ class Encoder(eqx.Module):
       )
     
     lim = 1 / math.sqrt(c.d_model)
-    self.summary_tokens = uniform(ks[1], (c.num_output_embs ,c.d_model), minval=-lim, maxval=lim)
+    self.latent_input_embeddings = uniform(ks[1], (c.max_latents, c.d_model), minval=-lim, maxval=lim)
     
     self.enc_layers = [EncoderLayer(key=ks[2],c=c) for _ in range(c.num_enc_layers)]
     self.num_input_vars = c.num_input_variables
-    self.num_output_embs = c.num_output_embs
-    
-  def __call__(self,x,*,key):
+    self.num_observations = c.num_observations
+  
+  @eqx.filter_jit
+  def __call__(self,x,*,key, mask):
     assert x.ndim == 2 and x.shape[1] == self.num_input_vars
-    ks = split(key, len(self.enc_layers))
-    x = vmap(self.obs_to_embed)(x)
-    x = jnp.concatenate([x,self.summary_tokens])
+    assert mask.dtype == jnp.bool_
+    obs = vmap(self.obs_to_embed)(x[:self.num_observations])
+    latents = vmap(self.obs_to_embed)(x[self.num_observations:])
+    x = jnp.concatenate([obs, latents, self.latent_input_embeddings[x.shape[0]][None]])
     
+    ks = split(key, len(self.enc_layers))
     for i,enc in enumerate(self.enc_layers):
-      x = enc(x,key=ks[i])
+      x = enc(x,key=ks[i],mask=mask)
       
-    return x[-self.num_output_embs:]
+    return x
     
 if __name__ == "__main__":
   m = Encoder(key=PRNGKey(0), c=EncoderCfg())

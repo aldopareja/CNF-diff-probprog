@@ -4,7 +4,7 @@ from jax.random import PRNGKey, split, bernoulli, normal
 from jax import numpy as jnp
 import equinox as eqx
 
-from real_nvp import RealNVPLayer, RealNVP_Flow
+from src.real_nvp import RealNVPLayer, RealNVP_Flow
 
 import time
 
