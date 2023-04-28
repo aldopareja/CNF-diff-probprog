@@ -65,7 +65,7 @@ def test_GP_Inference():
     else add have higher probability of adding even.
     '''
     ks = split(key, 7)
-    n = npy.sample("num", dist.Categorical(probs=jnp.array([0.5, 0.5, 0.0, 0.0, 0.0])), rng_key=ks[0])
+    n = npy.sample("num", dist.Categorical(probs=jnp.array([0.2, 0.2, 0.2, 0.2, 0.2])), rng_key=ks[0])
       
     _, values = body_fn(n.item()+1, ks[1])
     total = 0
@@ -80,56 +80,60 @@ def test_GP_Inference():
     return total
 
   model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=1,
-                                                               num_observations=1,))
-  
-  num_steps = 100000
-  optim = optax.chain(
-      optax.clip_by_global_norm(5.0),
-      optax.adamw(
-          learning_rate=optax.cosine_onecycle_schedule(
-              num_steps,
-              0.0001,
-              0.01,
-              1e1,
-              1e2,
-          ),
-          weight_decay=0.0005,
-      ),
-  )
-  batch_size = 100
-  opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-  traces = load_traces("tmp/")
+                                                               num_observations=1,
+                                                               max_discrete_choices=5))
+  # check if the model has been saved already and load it
+  if os.path.exists("tmp/dummy.eqx") and False:
+    model = eqx.tree_deserialise_leaves(Path("tmp/dummy.eqx"), model)
+  else:
+    num_steps = 100000
+    optim = optax.chain(
+        optax.clip_by_global_norm(5.0),
+        optax.adamw(
+            learning_rate=optax.cosine_onecycle_schedule(
+                num_steps,
+                0.0001,
+                0.01,
+                1e1,
+                1e2,
+            ),
+            weight_decay=0.0005,
+        ),
+    )
+    batch_size = 400
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    traces = load_traces("tmp/")
 
-  @eqx.filter_value_and_grad
-  def loss(model, trs, ks):
-      log_p = vmap(model.log_p)(trs, ks)
-      return -jnp.mean(log_p)
+    @eqx.filter_value_and_grad
+    def loss(model, trs, ks):
+        log_p = vmap(model.log_p)(trs, ks)
+        return -jnp.mean(log_p)
 
-  def update_model(grads, opt_state, model):
-    updates, opt_state = optim.update(grads, opt_state, model)
-    model = eqx.apply_updates(model, updates)
-    return model, opt_state
-  
-  @eqx.filter_jit
-  def make_step(model, opt_state, key, trs):
-      ks = split(key, batch_size + 1)
-      l, grads = loss(model, trs, ks[:batch_size])
-      model, opt_state = update_model(grads, opt_state, model)
-      return l, model, opt_state, ks[-1]
-  
-  key = PRNGKey(573)
-  out_path = Path("tmp/")
-  os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps)):
-      start = time.time()
-      batch_traces = sample_random_batch(traces, batch_size)
-      l, model, opt_state, key = make_step(model, opt_state, key, batch_traces)
-      end = time.time()
-      if i % 100 == 0 or i == 1:
-          print("l", l, "t", end - start)
-          #save model to dummy file
-          p = out_path / f"dummy.eqx"
-          eqx.tree_serialise_leaves(p, model)
+    def update_model(grads, opt_state, model):
+      updates, opt_state = optim.update(grads, opt_state, model)
+      model = eqx.apply_updates(model, updates)
+      return model, opt_state
+    
+    @eqx.filter_jit
+    def make_step(model, opt_state, key, trs):
+        ks = split(key, batch_size + 1)
+        l, grads = loss(model, trs, ks[:batch_size])
+        model, opt_state = update_model(grads, opt_state, model)
+        return l, model, opt_state, ks[-1]
+    
+    key = PRNGKey(573)
+    out_path = Path("tmp/")
+    os.makedirs(out_path, exist_ok=True)
+    for i in tqdm(range(num_steps)):
+        start = time.time()
+        batch_traces = sample_random_batch(traces, batch_size)
+        l, model, opt_state, key = make_step(model, opt_state, key, batch_traces)
+        end = time.time()
+        if i % 100 == 0 or i == 1:
+            print("l", l, "t", end - start)
+            #save model to dummy file
+            p = out_path / f"dummy.eqx"
+            eqx.tree_serialise_leaves(p, model)
   
   
   

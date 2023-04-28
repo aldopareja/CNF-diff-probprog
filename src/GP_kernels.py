@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 import jax
 import numpyro as npy
@@ -9,6 +10,9 @@ from jax.random import PRNGKey, split
 
 from src.encoder import Encoder, EncoderCfg
 from src.real_nvp import RealNVP_Flow
+#TODO: I should use numpyro
+from tensorflow_probability.substrates import jax as tfp
+tfd = tfp.distributions
 
 
 class RationalQuadraticKernel(eqx.Module):
@@ -213,6 +217,34 @@ class GPInference(eqx.Module):
     
     return jnp.sum(jnp.stack(all_log_p))
   
+  def rsample(self, obs, key):
+    assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
+    key, sk1,sk2 = split(key,3)
+    
+    sample = OrderedDict()
+    sample['obs'] = obs
+    input = jnp.broadcast_to(obs, (1, self.num_input_variables))
+    
+    emb = self.input_encoder(input, key=sk2, mask = jnp.ones((2,), dtype=bool))[-1]
+    
+    logits = self.discrete_mlp_dist(emb)
+    num_steps = tfd.Categorical(logits=logits).sample(seed=sk1).item()
+    print(f"num_steps: {num_steps}")
+    sample['num_steps'] = num_steps
+    input = jnp.concatenate([input, jnp.full((1,1), jnp.float32(num_steps))], axis=0)
+    
+    for i in range(num_steps+1):
+      key, sk1, sk2 = split(key,3)
+      emb = self.input_encoder(input, key=sk1, mask = jnp.ones((3+i,), dtype=bool))[-1]
+      val = self.continuous_flow_dist.rsample(key=sk2, cond_vars=emb)
+      print(f"val_{i}: {val}")
+      sample[f"val_{i}"] = val
+      input = jnp.concatenate([input, jnp.full((1,1), val)], axis=0)
+      
+    return sample
+    
+    
+  
   @staticmethod
   def make_masks(mask):
     '''
@@ -247,6 +279,7 @@ class GPInference(eqx.Module):
         
   def discrete_log_prob(self, emb, value):
     logits = self.discrete_mlp_dist(emb)
+    assert logits.ndim == 1
     log_p = logits[value] - jax.nn.logsumexp(logits)
     return log_p
 

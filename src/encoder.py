@@ -91,14 +91,29 @@ class Encoder(eqx.Module):
     self.enc_layers = [EncoderLayer(key=ks[2],c=c) for _ in range(c.num_enc_layers)]
     self.num_input_vars = c.num_input_variables
     self.num_observations = c.num_observations
-  
+    
+  @staticmethod
   @eqx.filter_jit
+  def positional_encoding(num_tokens, d_model):
+    # Initialize a matrix with shape (num_tokens, d_model)
+    pos_enc = jnp.zeros((num_tokens, d_model))
+
+    # Calculate positional encoding for each token
+    for pos in range(num_tokens):
+        for i in range(0, d_model, 2):
+            pos_enc = pos_enc.at[pos, i].set(jnp.sin(pos / jnp.power(10000, (2 * i) / d_model)))
+            pos_enc = pos_enc.at[pos, i + 1].set(jnp.cos(pos / jnp.power(10000, (2 * (i + 1)) / d_model)))
+
+    return pos_enc
+  
   def __call__(self,x,*,key, mask):
     assert x.ndim == 2 and x.shape[1] == self.num_input_vars
     assert mask.dtype == jnp.bool_
     obs = vmap(self.obs_to_embed)(x[:self.num_observations])
     latents = vmap(self.obs_to_embed)(x[self.num_observations:])
     x = jnp.concatenate([obs, latents, self.latent_input_embeddings[x.shape[0]][None]])
+    
+    x += self.positional_encoding(x.shape[0],x.shape[1])
     
     ks = split(key, len(self.enc_layers))
     for i,enc in enumerate(self.enc_layers):
