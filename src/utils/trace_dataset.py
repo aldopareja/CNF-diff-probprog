@@ -1,9 +1,15 @@
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from copy import deepcopy
+from dataclasses import dataclass
 from itertools import repeat
 from os import makedirs
 from jax.random import split, PRNGKey
 from numpyro.handlers import trace
-from multiprocessing import Pool, cpu_count
+import multiprocessing as mp
+import dill
+dill.Pickler.dumps, dill.Pickler.loads = dill.dumps, dill.loads
+mp.reduction.ForkingPickler = dill.Pickler
+mp.reduction.dump = dill.dump
 from jax import numpy as jnp
 from tqdm import tqdm
 import equinox as eqx
@@ -17,44 +23,7 @@ def get_trace(args):
   exec_trace = trace(m).get_trace(k)
   return exec_trace
 
-def get_sample(args):
-  #TODO: this doesn't work for multivalued variables, e.g. the obsevation from a mulitvariate gaussian, which is a 2d matrix with num_samples x num_dimensions
-  #need to fix this
-  *args, total_length = args
-  exec_trace = get_trace(args)
-  
-  result = defaultdict(list)
-  for k,v in exec_trace.items():
-    value = v['value']
-    assert value.ndim == 0, "value is not a scalar"
-    if k == 'obs':
-      is_discrete = value.dtype.kind in ('i', 'u')
-    else:
-      is_discrete = v['fn'].is_discrete
-    
-    result['values'].append(jnp.float32(value))
-    result['is_discrete'].append(jnp.array(is_discrete))
-    result['is_obs'].append(jnp.array(k == 'obs'))
-    
-  #move observation to the first position
-  obs_idx = result['is_obs'].index(True)
-  for k,v in result.items():
-    result[k] = [v[obs_idx]] + v[:obs_idx] + v[obs_idx+1:]
-  
-  result = {k:jnp.stack(v) for k,v in result.items()}
-  
-  result['attention_mask'] = jnp.bool_(jnp.ones_like(result['values']))
-  
-  #padd to the same length
-  arr_len = len(result['values'])
-  if total_length is not None:
-    for k,v in result.items():
-      result[k] = jnp.pad(v, (0, total_length-arr_len))
-  
-  return jtu.tree_map(np.array,result)
-  
-
-def sample_many_traces(m, key:PRNGKey, num_traces, parallel):
+def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=14):
   '''
     samples many traces from a model and process the results into a list of dicts. Use this function to get a dataset to train an amortized inference model.
     better to set CUDA_VISIBLE_DEVICES="" to avoid problems with multiprocessing.
@@ -64,31 +33,99 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel):
       key: PRNGKey
       num_traces: int
       parallel: bool
+      get_fn: either get_trace or get_sample
     Returns:
       traces: list of dicts each with keys 'values' and 'is_discrete'. Values contain the values of the samples and is_discrete is a boolean array indicating if the variable is discrete or not.
   '''
   ks = split(key, num_traces)
   
   #model, key, total_length
-  args = zip(repeat(m),ks, repeat(7))
+  args = zip(repeat(m),ks)
   
   if parallel:
-    with Pool(cpu_count()//4) as p:
-      traces = list(p.imap_unordered(get_sample, tqdm(args, total=num_traces),chunksize=200))
+    with mp.Pool(mp.cpu_count()//4) as p:
+      traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=100))
   else:
-    traces = list(map(get_sample, tqdm(args, total=num_traces)))
-  
+    traces = list(map(get_trace, tqdm(args, total=num_traces)))
+    
+  traces = list(filter(lambda t: len(t) <= max_num_variables, traces))
+  default_trace = build_default_trace(traces)
+  if parallel:
+    with mp.Pool(mp.cpu_count()//4) as p:
+      traces = list(p.imap_unordered(get_trace_order_and_values, 
+                                     tqdm(zip(traces, repeat(default_trace)),total=len(traces), desc='postprocessing traces'),
+                                     chunksize=100))
+  else:
+    traces = list(map(get_trace_order_and_values, zip(traces, repeat(default_trace))))
   return traces
 
+def get_trace_order_and_values(args):
+  ''' process a trace to make it compatible with the default trace.
+      This is necessary because batching pytrees requires that all pytrees have the same structure and shape in the leafs.
+      The observation gets moved to the first position as shown by the indices.
+      variables present in the trace are added sequentially also as shown by the indices.
+      the values of the default trace are replaced by the values of the trace (only for present variables).
+      
+      Each address should only be sampled once and and should have the same shape regardless of the model's draw.
+    args: (trace, default_trace)
+    returns 
+  '''
+  trace, default_trace = args
+  p_trace = deepcopy(default_trace)
+  
+  #add present variables indices and values starting with the observation
+  indices = [p_trace['obs']['indices']]
+  for k,v in trace.items():
+    p_trace[k]['value'][:] = v['value']
+    if k != 'obs':
+      indices.append(p_trace[k]['indices'])
+  indices = [np.concatenate(indices)]
+  attention_mask = np.ones(len(indices[0]), dtype=bool)
+  
+  #add not present variables indices
+  for k in p_trace.keys():
+    if k not in trace:
+      indices.append(p_trace[k]['indices'])
+    p_trace[k].pop('indices')
+    
+  indices = np.concatenate(indices)
+  attention_mask = np.concatenate([attention_mask, 
+                                   np.zeros(len(indices) - len(attention_mask), 
+                                            dtype=bool)])
+  # return ProcessedTrace(indices=indices, attention_mask=attention_mask, variables=p_trace)
+  return dict(trace=p_trace, indices=indices, attention_mask=attention_mask)
+    
+
+def get_necessary_variable_info(v,current_idx):
+  shape = v['value'].shape
+  shape = (1,1) if shape == () else shape
+  assert len(shape) == 2, "a variable shape should be seq_len, num_dims"
+  def_value = np.zeros(shape, dtype=v['value'].dtype)
+  # is_discrete = v['value'].dtype.kind in ('i', 'u')
+  indices = np.arange(current_idx, current_idx + shape[0])
+  return dict(value=def_value, indices = indices)
+
+def build_default_trace(traces):
+  default_trace = dict()
+  current_idx = 0
+  for t in traces:
+    for k,v in t.items():
+      if k not in default_trace:
+        default_trace[k] = get_necessary_variable_info(v,current_idx)
+        current_idx += default_trace[k]['value'].shape[0]
+        
+  return default_trace
+
 #serialize traces to disk with pickle
-def serialize_traces(traces, path):
+def serialize_traces(traces, path="tmp/dummy_data.pkl"):
   p = Path(path)
-  makedirs(p, exist_ok=True)
-  pickle.dump(traces, open(p / f"dataset.pkl", "wb"))
+  makedirs(p.parent, exist_ok=True)
+  pickle.dump(traces, open(p, "wb"))
   
 #load traces
-def load_traces(path):
-  p = Path(path) / f"dataset.pkl"
+def load_traces(path="tmp/dummy_data.pkl"):
+  p = Path(path)
+  #extract the base path without the file name (only the directory)
   traces = pickle.load(open(p, "rb"))
   return traces
 

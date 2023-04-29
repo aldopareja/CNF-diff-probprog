@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Tuple
 import jax
 import numpyro as npy
 from numpyro import distributions as dist
@@ -19,7 +20,7 @@ class RationalQuadraticKernel(eqx.Module):
     lenght_scale: float
     scale_mixture: float
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, x1, x2):
         squared_scaled_distance = jnp.square(x1 - x2) / jnp.square(self.lenght_scale)
         return jnp.power(
@@ -31,23 +32,27 @@ class RationalQuadraticKernel(eqx.Module):
 class LinearKernel(eqx.Module):
     bias: float
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def __call__(self, x1, x2):
         return x1 * x2 + self.bias
 
 
 def sum_kernels(k1, k2):
-    return lambda x1, x2: k1(x1, x2) + k2(x1, x2)
+    def kernel_fn(x1, x2):
+        return k1(x1, x2) + k2(x1, x2)
+    return kernel_fn
 
 
 def multiply_kernels(k1, k2):
-    return lambda x1, x2: k1(x1, x2) * k2(x1, x2)
+    def kernel_fn(x1, x2):
+        return k1(x1, x2) * k2(x1, x2)
+    return kernel_fn
 
 
 def sample_kernel(key: PRNGKey, address_prefix=""):
     ks = split(key, 4)
     idx = npy.sample(
-        f"{address_prefix}idx",
+        f"{address_prefix}kernel_type",
         npy.distributions.Categorical(probs=jnp.array([0.4, 0.4, 0.1, 0.1])),
         rng_key=ks[0],
     )
@@ -120,7 +125,7 @@ class ObsDistribution(dist.Distribution):
     return log_prob_x + log_prob_y
   
   @staticmethod
-  @jit
+  # @jit
   def add_noise_to_diagonal(cov,std):
     cov = cov + jnp.eye(cov.shape[0]) * (1e-6 + std)
     return cov
@@ -135,7 +140,7 @@ def sample_observations(key:PRNGKey, kernel_fn, num:int) -> jnp.ndarray:
 
 def model(key:PRNGKey):
   ks = split(key, 3)
-  kernel = jit(sample_kernel(ks[0]))
+  kernel = sample_kernel(ks[0])
   return sample_observations(ks[3], kernel, 100)
 
 @dataclass
@@ -148,8 +153,8 @@ class GPInferenceCfg:
   continuous_flow_num_layers_per_block:int=2
   continuous_flow_num_augment:int=91
   num_enc_layers:int=4
-  max_discrete_choices:int =4
-  num_input_variables:int =2
+  max_discrete_choices:int =5
+  num_input_variables:Tuple[int] = (1,2)
   num_observations:int =100
 
 class GPInference(eqx.Module):
@@ -197,9 +202,7 @@ class GPInference(eqx.Module):
     self.num_input_variables = c.num_input_variables
     
   def log_p(self, t, key):
-    values, _, is_discrete, mask = t['values'], t['is_obs'], t['is_discrete'], t['attention_mask']
-    assert len(values) == len(is_discrete) == len(mask)
-    assert mask.ndim == 1
+    mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
     
     obs = values[0]
     input = jnp.broadcast_to(obs, (1, self.num_input_variables))
@@ -274,6 +277,7 @@ class GPInference(eqx.Module):
       lambda: self.discrete_log_prob(emb, jnp.int32(variable_value)),
       lambda: self.continuous_log_prob(emb, jnp.float32(variable_value), ks_[1]),
     )
+    log_p = jax.lax.cond(mask[-1]==True, lambda: log_p, lambda: 0.)
     new_input = jnp.concatenate([input, jnp.full((1,input.shape[1]), variable_value)], axis=0)
     return new_input, log_p
         
