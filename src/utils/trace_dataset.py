@@ -43,7 +43,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
   args = zip(repeat(m),ks)
   
   if parallel:
-    with mp.Pool(mp.cpu_count()//4) as p:
+    with mp.Pool(mp.cpu_count()//2) as p:
       traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=100))
   else:
     traces = list(map(get_trace, tqdm(args, total=num_traces)))
@@ -51,7 +51,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
   traces = list(filter(lambda t: len(t) <= max_num_variables, traces))
   default_trace = build_default_trace(traces)
   if parallel:
-    with mp.Pool(mp.cpu_count()//4) as p:
+    with mp.Pool(mp.cpu_count()//2) as p:
       traces = list(p.imap_unordered(get_trace_order_and_values, 
                                      tqdm(zip(traces, repeat(default_trace)),total=len(traces), desc='postprocessing traces'),
                                      chunksize=100))
@@ -106,7 +106,7 @@ def get_necessary_variable_info(v,current_idx):
   return dict(value=def_value, indices = indices)
 
 def build_default_trace(traces):
-  default_trace = dict()
+  default_trace = OrderedDict()
   current_idx = 0
   for t in traces:
     for k,v in t.items():

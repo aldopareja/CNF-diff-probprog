@@ -15,11 +15,7 @@ class EncoderCfg:
   num_heads: int = 4
   dropout_rate: float = 0.1
   d_model: int = 52
-  num_input_variables: int = 2
   num_enc_layers: int = 2
-  max_latents: int = 100
-  num_observations: int = 100
-  
   
 class EncoderLayer(eqx.Module):
   multihead_Attention: eqx.nn.MultiheadAttention
@@ -71,11 +67,11 @@ class EncoderLayer(eqx.Module):
     return x
     
 class Encoder(eqx.Module):
-  obs_to_embed: eqx.nn.Linear
+  # obs_to_embed: eqx.nn.Linear
   enc_layers: List[EncoderLayer]
-  latent_input_embeddings: Array
-  num_input_vars: eqx.static_field()
-  num_observations: eqx.static_field()
+  # latent_input_embeddings: Array
+  # num_input_vars: eqx.static_field()
+  # num_observations: eqx.static_field()
   
   def __init__(self, *, key:PRNGKey, c:EncoderCfg):
     ks = split(key,10)
@@ -85,35 +81,16 @@ class Encoder(eqx.Module):
       key = ks[0]
       )
     
-    lim = 1 / math.sqrt(c.d_model)
-    self.latent_input_embeddings = uniform(ks[1], (c.max_latents, c.d_model), minval=-lim, maxval=lim)
+    # lim = 1 / math.sqrt(c.d_model)
+    # self.latent_input_embeddings = uniform(ks[1], (c.max_latents, c.d_model), minval=-lim, maxval=lim)
     
     self.enc_layers = [EncoderLayer(key=ks[2],c=c) for _ in range(c.num_enc_layers)]
-    self.num_input_vars = c.num_input_variables
-    self.num_observations = c.num_observations
-    
-  @staticmethod
-  @eqx.filter_jit
-  def positional_encoding(num_tokens, d_model):
-    # Initialize a matrix with shape (num_tokens, d_model)
-    pos_enc = jnp.zeros((num_tokens, d_model))
-
-    # Calculate positional encoding for each token
-    for pos in range(num_tokens):
-        for i in range(0, d_model, 2):
-            pos_enc = pos_enc.at[pos, i].set(jnp.sin(pos / jnp.power(10000, (2 * i) / d_model)))
-            pos_enc = pos_enc.at[pos, i + 1].set(jnp.cos(pos / jnp.power(10000, (2 * (i + 1)) / d_model)))
-
-    return pos_enc
+    # self.num_input_vars = c.num_input_variables
+    # self.num_observations = c.num_observations
   
   def __call__(self,x,*,key, mask):
-    assert x.ndim == 2 and x.shape[1] == self.num_input_vars
+    assert x.ndim == 2
     assert mask.dtype == jnp.bool_
-    obs = vmap(self.obs_to_embed)(x[:self.num_observations])
-    latents = vmap(self.obs_to_embed)(x[self.num_observations:])
-    x = jnp.concatenate([obs, latents, self.latent_input_embeddings[x.shape[0]][None]])
-    
-    x += self.positional_encoding(x.shape[0],x.shape[1])
     
     ks = split(key, len(self.enc_layers))
     for i,enc in enumerate(self.enc_layers):

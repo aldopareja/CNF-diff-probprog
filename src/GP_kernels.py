@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Tuple
+import math
+from typing import List, Tuple
 import jax
 import numpyro as npy
 from numpyro import distributions as dist
@@ -156,12 +157,15 @@ class GPInferenceCfg:
   max_discrete_choices:int =5
   num_input_variables:Tuple[int] = (1,2)
   num_observations:int =100
+  max_num_latents:int = 100
 
 class GPInference(eqx.Module):
   input_encoder: Encoder
   continuous_flow_dist: RealNVP_Flow
   discrete_mlp_dist: eqx.nn.MLP
-  num_input_variables: int
+  obs_to_embed_list: List[eqx.nn.MLP]
+  num_input_variables: Tuple[int]
+  num_observations: int
   
   def __init__(
     self,
@@ -169,13 +173,11 @@ class GPInference(eqx.Module):
     key: PRNGKey,
     c: GPInferenceCfg = GPInferenceCfg(),
   ):
-    ks = split(key, 3)
+    ks = split(key, 4)
     
     ec = EncoderCfg(num_enc_layers=c.num_enc_layers,
                     d_model=c.d_model,
-                    dropout_rate=c.dropout_rate,
-                    num_input_variables=c.num_input_variables,
-                    num_observations=c.num_observations)
+                    dropout_rate=c.dropout_rate,)
     self.input_encoder = Encoder(
       key=ks[0],
       c=ec,
@@ -199,23 +201,48 @@ class GPInference(eqx.Module):
       key = ks[2]
     )
     
+    self.obs_to_embed_list = [eqx.nn.Linear(in_features=i,
+                                          out_features=c.d_model,
+                                          key=k) 
+                              for i,k in zip(c.num_input_variables,
+                                             split(ks[3], len(c.num_input_variables)))]
+    
+    lim = 1 / math.sqrt(c.d_model)
+    self.latent_input_embeddings = jax.random.uniform(ks[1], (c.max_num_latents, c.d_model), minval=-lim, maxval=lim)
+    
     self.num_input_variables = c.num_input_variables
+    
+                                         
     
   def log_p(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
     
-    obs = values[0]
-    input = jnp.broadcast_to(obs, (1, self.num_input_variables))
+    enc_input = []
+    outputs = []
+    is_discrete = []
+    for k,v in variables.items():
+      assert len(v.shape) == 2 and v.shape[1] in self.num_input_variables
+      input = vmap(self.obs_to_embed_list[v.shape[1]])(jnp.float32(v))
+      enc_input.append(input)
+      if k != 'obs':
+        assert v.shape[1] == 1, 'only single dimensional latents are supported, consider flattening multivariate samples'
+        outputs.append(jnp.float32(v))
+        is_discrete.append(jax.lax.cond(v.dtype == jnp.int32, lambda: True, lambda: False, None))
+        
+    enc_input = jnp.concatenate(enc_input, axis=0)[indices]
+    outputs = jnp.concatenate(outputs, axis=0)[indices]
+    is_discrete = jnp.stack(is_discrete)[indices]
     
     ks = split(key, len(t['values']))
     
-    masks = self.make_masks(mask)
+    masks = self.make_masks(mask, self.num_observations)
     
     #start from second value since the first is the observation
-    trs = [(ks[i], values[i], is_discrete[i], masks[i]) for i in range(1,len(values))]
+    trs = [(ks[i], outputs[i], is_discrete[i], masks[i], enc_input[:i+self.num_observations]) 
+           for i in range(len(outputs))]
     all_log_p = []
     for i in range(len(trs)):
-      input, log_p = self.process_trace_element(input, trs[i])
+      log_p = self.process_trace_element(trs[i])
       all_log_p.append(log_p)
     
     return jnp.sum(jnp.stack(all_log_p))
@@ -249,7 +276,7 @@ class GPInference(eqx.Module):
     
   
   @staticmethod
-  def make_masks(mask):
+  def make_masks(mask, num_observations):
     '''
     make masks for each step in the trace, attending at the observation and up to the current variable
     ex:
@@ -262,24 +289,30 @@ class GPInference(eqx.Module):
     Array([ True,  True,  True,  True,  True, False, False], dtype=bool)]
     '''
     masks = []
-    for i in range(len(mask)):
+    for i in range(num_observations, len(mask)):
       mask_i = jnp.where(jnp.arange(i+1)<mask.sum(), True, False)
       masks.append(mask_i)
     return masks
   
   # @eqx.filter_jit
-  def process_trace_element(self, input, t_i):
-    key, variable_value, discrete, mask = t_i
+  def process_trace_element(self, t_i):
+    key, variable_value, discrete, mask, so_far_input = t_i
+    # add latent embedding to input
+    latent_emb = self.latent_input_embeddings[so_far_input.shape[0]-self.num_observations][None]
+    encoder_input = jnp.concatenate([so_far_input,latent_emb], axis=0)
+    
+    encoder_input += self.positional_encoding(*encoder_input.shape)
+    
     ks_ = split(key, 2)
-    emb = self.input_encoder(input, key=ks_[0], mask=mask)[-1]
+    emb = self.input_encoder(encoder_input, key=ks_[0], mask=mask)[-1]
+    
     log_p = jax.lax.cond(
       discrete,
       lambda: self.discrete_log_prob(emb, jnp.int32(variable_value)),
       lambda: self.continuous_log_prob(emb, jnp.float32(variable_value), ks_[1]),
     )
     log_p = jax.lax.cond(mask[-1]==True, lambda: log_p, lambda: 0.)
-    new_input = jnp.concatenate([input, jnp.full((1,input.shape[1]), variable_value)], axis=0)
-    return new_input, log_p
+    return log_p
         
   def discrete_log_prob(self, emb, value):
     logits = self.discrete_mlp_dist(emb)
@@ -289,6 +322,20 @@ class GPInference(eqx.Module):
 
   def continuous_log_prob(self, emb, value, key):
     return self.continuous_flow_dist.log_p(z=value[None], cond_vars=emb, key=key)
+  
+  @staticmethod
+  @eqx.filter_jit
+  def positional_encoding(num_tokens, d_model):
+    # Initialize a matrix with shape (num_tokens, d_model)
+    pos_enc = jnp.zeros((num_tokens, d_model))
+
+    # Calculate positional encoding for each token
+    for pos in range(num_tokens):
+        for i in range(0, d_model, 2):
+            pos_enc = pos_enc.at[pos, i].set(jnp.sin(pos / jnp.power(10000, (2 * i) / d_model)))
+            pos_enc = pos_enc.at[pos, i + 1].set(jnp.cos(pos / jnp.power(10000, (2 * (i + 1)) / d_model)))
+
+    return pos_enc
         
     
 
