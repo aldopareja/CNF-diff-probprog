@@ -28,7 +28,7 @@ class GatedDenseLayer(eqx.Module):
     self.l2 = eqx.nn.Linear(hidden_size*2, hidden_size*2,key=k2)
     
   def __call__(self, x):
-    assert x.ndim == 1
+    assert x.ndim == 1 and x.shape[0] % 2 == 0
     out = concat_elu(x)
     out = self.l1(out)
     out = concat_elu(out)
