@@ -75,11 +75,11 @@ class Encoder(eqx.Module):
   
   def __init__(self, *, key:PRNGKey, c:EncoderCfg):
     ks = split(key,10)
-    self.obs_to_embed = eqx.nn.Linear(
-      in_features=c.num_input_variables, 
-      out_features=c.d_model,
-      key = ks[0]
-      )
+    # self.obs_to_embed = eqx.nn.Linear(
+    #   in_features=c.num_input_variables, 
+    #   out_features=c.d_model,
+    #   key = ks[0]
+    #   )
     
     # lim = 1 / math.sqrt(c.d_model)
     # self.latent_input_embeddings = uniform(ks[1], (c.max_latents, c.d_model), minval=-lim, maxval=lim)
