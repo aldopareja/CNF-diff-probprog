@@ -78,7 +78,6 @@ def sampler(key):
   return total
   
 def test_GP_Inference():
-
   #check if tmp/erase.pkl exists and load it
   if os.path.exists("tmp/2000000_dummy.pkl"):
     traces = load_traces("tmp/2000000_dummy.pkl")
@@ -90,7 +89,8 @@ def test_GP_Inference():
   model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,),
                                                                num_observations=1,
                                                                max_discrete_choices=5,
-                                                               d_model=128,))
+                                                               d_model=256,
+                                                               num_enc_layers=4,))
   # check if the model has been saved already and load it
   if os.path.exists("tmp/dummy.eqx") and False:
     model = eqx.tree_deserialise_leaves(Path("tmp/dummy.eqx"), model)
@@ -143,10 +143,69 @@ def test_GP_Inference():
             #save model to dummy file
             p = out_path / f"dummy_codev2.eqx"
             eqx.tree_serialise_leaves(p, model)
+            
+def test_gp_experiment():
+    model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,2),
+                                                               num_observations=100,
+                                                               max_discrete_choices=4,
+                                                               d_model=256,
+                                                               num_enc_layers=4,))
+    
+    traces = load_traces("tmp/100k_gp.pkl")
+    
+    num_steps = 20000
+    optim = optax.chain(
+        optax.clip_by_global_norm(5.0),
+        optax.adamw(
+            learning_rate=optax.cosine_onecycle_schedule(
+                num_steps,
+                0.0001,
+                0.01,
+                1e1,
+                1e2,
+            ),
+            weight_decay=0.0005,
+        ),
+    )
+    batch_size = 40
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+
+    @eqx.filter_value_and_grad
+    def loss(model, trs, ks):
+        log_p = vmap(model.log_p)(trs, ks)
+        return -jnp.mean(log_p)
+
+    def update_model(grads, opt_state, model):
+      updates, opt_state = optim.update(grads, opt_state, model)
+      model = eqx.apply_updates(model, updates)
+      return model, opt_state
+    
+    @eqx.filter_jit
+    def make_step(model, opt_state, key, trs):
+        ks = split(key, batch_size + 1)
+        l, grads = loss(model, trs, ks[:batch_size])
+        model, opt_state = update_model(grads, opt_state, model)
+        return l, model, opt_state, ks[-1]
+    
+    key = PRNGKey(573)
+    out_path = Path("tmp/")
+    os.makedirs(out_path, exist_ok=True)
+    for i in tqdm(range(num_steps), desc="gp_40bs"):
+        start = time.time()
+        batch_traces = sample_random_batch(traces, batch_size)
+        l, model, opt_state, key = make_step(
+                                            model, opt_state, key, batch_traces)
+        end = time.time()
+        if i % 100 == 0 or i == 1:
+            print("l", l, "t", end - start)
+            #save model to dummy file
+            p = out_path / f"gp_40bs.eqx"
+            eqx.tree_serialise_leaves(p, model)
   
   
   
 if __name__ == '__main__':
-  test_GP_Inference()
-  test_model()
-  test_sample_kernel()
+  test_gp_experiment()
+  # test_GP_Inference()
+  # test_model()
+  # test_sample_kernel()

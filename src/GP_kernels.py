@@ -150,8 +150,8 @@ def model(key:PRNGKey):
 class GPInferenceCfg:
   d_model:int = 256
   dropout_rate:float = 0.1
-  discrete_mlp_width:int = 128
-  discrete_mlp_depth:int=2
+  discrete_mlp_width:int = 512
+  discrete_mlp_depth:int=4
   continuous_flow_blocks:int=8
   continuous_flow_num_layers_per_block:int=2
   continuous_flow_num_augment:int=91
@@ -166,7 +166,7 @@ class GPInference(eqx.Module):
   continuous_flow_dist: RealNVP_Flow
   discrete_mlp_dist: eqx.nn.MLP
   obs_to_embed_list: List[eqx.nn.MLP]
-  latent_input_embeddings: Array
+  # latent_input_embeddings: Array
   num_input_variables: Tuple[int]
   num_observations: int
   
@@ -210,21 +210,11 @@ class GPInference(eqx.Module):
                               for i,k in zip(c.num_input_variables,
                                              split(ks[3], len(c.num_input_variables)))]
     
-    lim = 1 / math.sqrt(c.d_model)
-    self.latent_input_embeddings = jax.random.uniform(ks[1], (c.max_num_latents, c.d_model), minval=-lim, maxval=lim)
+    # lim = 1 / math.sqrt(c.d_model)
+    # self.latent_input_embeddings = jax.random.uniform(ks[1], (c.max_num_latents, c.d_model), minval=-lim, maxval=lim)
     
     self.num_input_variables = c.num_input_variables
     self.num_observations = c.num_observations
-    
-  def add_latent_embedding(self, enc_input):
-    emb = self.latent_input_embeddings[enc_input.shape[0]][None]
-    enc_input = jnp.concatenate([enc_input, emb], axis=0)
-    return enc_input
-  
-  def add_latent_emb_and_pos_enc(self, enc_input):
-    enc_input = self.add_latent_embedding(enc_input)
-    enc_input += self.positional_encoding(*enc_input.shape)
-    return enc_input
     
   def log_p(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
@@ -246,10 +236,51 @@ class GPInference(eqx.Module):
         outputs.append(jnp.zeros((self.num_observations, 1)))
         is_discrete+=[False]*self.num_observations
     
-    enc_input = jnp.concatenate(enc_input, axis=0)[indices]
-    outputs = jnp.concatenate(outputs, axis=0)[indices]
-    is_discrete = jnp.stack(is_discrete)[indices]
-    ks = split(key,  enc_input.shape[0] - self.num_observations)
+    #shift inputs and outputs by one so output_i is conditioned on input_i
+    enc_input = jnp.concatenate(enc_input, axis=0)[indices][:-1]
+    enc_input += self.positional_encoding(*enc_input.shape)
+    
+    outputs = jnp.concatenate(outputs, axis=0)[indices][self.num_observations:]
+    is_discrete = jnp.stack(is_discrete)[indices][self.num_observations:]
+    i_range = jnp.arange(len(is_discrete)) + self.num_observations
+    
+    ks = split(key, len(is_discrete))
+    
+    all_log_p = vmap(self.get_causal_log_p, in_axes=(None, None, 0, 0, 0, 0))(enc_input, mask[:-1], ks, i_range, is_discrete, outputs)
+    
+    
+    
+    # def loop_step(mask_, inputs):
+    #   is_discrete_i, mask_sum, enc_input, outputs_i, ks_i = inputs
+    #   k1, k2 = split(ks_i, 2)
+    #   emb = self.input_encoder(enc_input, mask=mask_, key=k1)
+    #   log_p = lax.cond(
+    #       is_discrete_i,
+    #       lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(outputs_i[0]))),
+    #       lambda: self.continuous_log_prob(emb, jnp.float32(outputs_i), k2),
+    #   )
+    #   carry = (jnp.concatenate([input, new_input[None]], axis=0), mask_)
+    #   return carry, log_p
+
+    # # Initialize carry and inputs for jax.lax.scan
+    # init_mask_ = jnp.where(jnp.arange(self.num_observations)<mask.sum()-1, True, False)
+    # ks = split(key,  enc_input.shape[0] - self.num_observations)
+    # is_discrete = is_discrete[self.num_observations:]
+    # mask_sum = jnp.broadcast_to(mask.sum(), (enc_input.shape[0] - self.num_observations,))
+    # outputs = outputs[self.num_observations:]
+    # loop_length = enc_input.shape[0] - self.num_observations
+
+    # inputs = (jnp.arange(self.num_observations, enc_input.shape[0]),
+    #           is_discrete,
+    #           mask_sum,
+    #           jnp.broadcast_to(enc_input, (loop_length, *enc_input)), 
+    #           outputs,
+    #           ks)
+
+    # # Use jax.lax.scan to perform the loop
+    # _, all_log_p = lax.scan(loop_step, carry, inputs)
+    
+    return all_log_p.sum()
     
     all_log_p = []
     for i in range(self.num_observations, enc_input.shape[0]):
@@ -258,7 +289,7 @@ class GPInference(eqx.Module):
       mask_ = jnp.where(jnp.arange(i+1) < mask.sum(), True, False)
       emb = self.encode(so_far_input, mask_, k1)
       log_p = jax.lax.cond(
-        is_discrete[i],
+        jnp.logical_or(is_discrete[i]),
         #round to avoid floating point errors and cast to int for indexing
         lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(outputs[i][0]))),
         lambda: self.continuous_log_prob(emb, jnp.float32(outputs[i]), k2),
@@ -267,9 +298,69 @@ class GPInference(eqx.Module):
     
     return jnp.stack(all_log_p).sum()
     
-  def encode(self, so_far_input, mask, key):
-    enc_input = self.add_latent_emb_and_pos_enc(so_far_input)
-    return self.input_encoder(enc_input, mask=mask, key=key)[-1]
+  # def encode(self, so_far_input, mask, key):
+  #   enc_input = self.add_latent_emb_and_pos_enc(so_far_input)
+  #   return self.input_encoder(enc_input, mask=mask, key=key)[-1]
+  
+  @staticmethod
+  def get_causal_mask(mask, i):
+    '''returns a mask that is true for all indices before i but no more than mask.sum() indices
+    '''
+    return jnp.where(jnp.arange(mask.shape[0]) < i, True, False) * mask
+    
+  def get_causal_log_p(self, enc_input, mask, key, i, is_discrete_i, output_i):
+    k1,k2 = split(key, 2)
+    mask_ = self.get_causal_mask(mask, i)
+    emb = self.input_encoder(enc_input, mask=mask_, key=k1)[i]
+    log_p = jax.lax.cond(
+      is_discrete_i,
+      #round to avoid floating point errors and cast to int for indexing
+      lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(output_i[0]))),
+      lambda: self.continuous_log_prob(emb, jnp.float32(output_i), k2),
+    )
+    return log_p
+  
+      
+  def discrete_log_prob(self, emb, value):
+    assert len(emb.shape) == 1
+    assert value.shape == ()
+    logits = self.discrete_mlp_dist(emb)
+    assert logits.ndim == 1
+    log_p = logits[value] - jax.nn.logsumexp(logits)
+    return log_p
+
+  def continuous_log_prob(self, emb, value, key):
+    return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key)
+  
+  @staticmethod
+  @eqx.filter_jit
+  def positional_encoding(num_tokens, d_model):
+    def inner_loop_fn(carry, i, pos, d_model):
+      sin_val = jnp.sin(pos / jnp.power(10000, (2 * i) / d_model))
+      cos_val = jnp.cos(pos / jnp.power(10000, (2 * (i + 1)) / d_model))
+      carry = carry.at[i].set(sin_val)
+      carry = carry.at[i + 1].set(cos_val)
+      return carry, None
+    def outer_loop_fn(carry, pos, d_model):
+      init_carry = carry[pos]
+      i_vals = jnp.arange(0, d_model, 2)
+      final_carry, _ = lax.scan(lambda c, i: inner_loop_fn(c, i, pos, d_model), init_carry, i_vals)
+      carry = carry.at[pos].set(final_carry)
+      return carry, None
+    pos_enc = jnp.zeros((num_tokens, d_model))
+    pos_vals = jnp.arange(num_tokens)
+    pos_enc, _ = lax.scan(lambda c, pos: outer_loop_fn(c, pos, d_model), pos_enc, pos_vals)
+    return pos_enc
+  
+  def add_latent_embedding(self, enc_input):
+    emb = self.latent_input_embeddings[enc_input.shape[0]][None]
+    enc_input = jnp.concatenate([enc_input, emb], axis=0)
+    return enc_input
+  
+  def add_latent_emb_and_pos_enc(self, enc_input):
+    enc_input = self.add_latent_embedding(enc_input)
+    enc_input += self.positional_encoding(*enc_input.shape)
+    return enc_input
 
   def rsample(self, obs, key):
     # assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
@@ -304,37 +395,7 @@ class GPInference(eqx.Module):
       enc_input = jnp.concatenate([encoder_input, val_[None]], axis=0)
       
     return sample
-    
-  def discrete_log_prob(self, emb, value):
-    assert len(emb.shape) == 1
-    assert value.shape == ()
-    logits = self.discrete_mlp_dist(emb)
-    assert logits.ndim == 1
-    log_p = logits[value] - jax.nn.logsumexp(logits)
-    return log_p
 
-  def continuous_log_prob(self, emb, value, key):
-    return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key)
-  
-  @staticmethod
-  @eqx.filter_jit
-  def positional_encoding(num_tokens, d_model):
-    def inner_loop_fn(carry, i, pos, d_model):
-      sin_val = jnp.sin(pos / jnp.power(10000, (2 * i) / d_model))
-      cos_val = jnp.cos(pos / jnp.power(10000, (2 * (i + 1)) / d_model))
-      carry = carry.at[i].set(sin_val)
-      carry = carry.at[i + 1].set(cos_val)
-      return carry, None
-    def outer_loop_fn(carry, pos, d_model):
-      init_carry = carry[pos]
-      i_vals = jnp.arange(0, d_model, 2)
-      final_carry, _ = lax.scan(lambda c, i: inner_loop_fn(c, i, pos, d_model), init_carry, i_vals)
-      carry = carry.at[pos].set(final_carry)
-      return carry, None
-    pos_enc = jnp.zeros((num_tokens, d_model))
-    pos_vals = jnp.arange(num_tokens)
-    pos_enc, _ = lax.scan(lambda c, pos: outer_loop_fn(c, pos, d_model), pos_enc, pos_vals)
-    return pos_enc
         
     
 
