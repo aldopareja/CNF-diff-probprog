@@ -46,7 +46,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
     
     if parallel:
       with mp.Pool(mp.cpu_count()//4) as p:
-        traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=100))
+        traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=200))
     else:
       traces = list(map(get_trace, tqdm(args, total=num_traces)))
       

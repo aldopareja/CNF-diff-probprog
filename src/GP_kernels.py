@@ -228,40 +228,37 @@ class GPInference(eqx.Module):
     
   def log_p(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
+    # obs = variables['obs']['value']
+    # enc_input = vmap(self.obs_to_embed_list[0])(obs)
+    # input_with_latent_emb = self.add_latent_emb_and_pos_enc(enc_input)
     
+    # num = variables['num']['value']
+    # ks = split(key, 6)
     
+    # enc_out = self.input_encoder(input_with_latent_emb, mask=jnp.ones(2,dtype=bool), key = ks[0])[-1]
+    # logits = self.discrete_mlp_dist(enc_out)
+    # num_log_p = logits[num.reshape(())] - jax.nn.logsumexp(logits)
     
-    obs = variables['obs']['value']
-    enc_input = vmap(self.obs_to_embed_list[0])(obs)
-    input_with_latent_emb = self.add_latent_emb_and_pos_enc(enc_input)
+    # num_ = vmap(self.obs_to_embed_list[0])(jnp.float32(num))
+    # enc_input = jnp.concatenate([enc_input, num_], axis=0)
     
-    num = variables['num']['value']
-    ks = split(key, 6)
-    
-    enc_out = self.input_encoder(input_with_latent_emb, mask=jnp.ones(2,dtype=bool), key = ks[0])[-1]
-    logits = self.discrete_mlp_dist(enc_out)
-    num_log_p = logits[num.reshape(())] - jax.nn.logsumexp(logits)
-    
-    num_ = vmap(self.obs_to_embed_list[0])(jnp.float32(num))
-    enc_input = jnp.concatenate([enc_input, num_], axis=0)
-    
-    steps_log_p = []
-    for i in range(5):
-      input_with_latent_emb = self.add_latent_emb_and_pos_enc(enc_input)
-      v = variables[f'step_{i}']['value']
+    # steps_log_p = []
+    # for i in range(5):
+    #   input_with_latent_emb = self.add_latent_emb_and_pos_enc(enc_input)
+    #   v = variables[f'step_{i}']['value']
       
-      mask_ = jnp.where(jnp.arange(2+i+1) < mask.sum(), True, False)
+    #   mask_ = jnp.where(jnp.arange(2+i+1) < mask.sum(), True, False)
       
-      k1,k2 = split(ks[i+1])
-      enc_out = self.input_encoder(input_with_latent_emb, mask=mask_, key = k1)[-1]
+    #   k1,k2 = split(ks[i+1])
+    #   enc_out = self.input_encoder(input_with_latent_emb, mask=mask_, key = k1)[-1]
       
-      log_p = lax.cond(mask_[-1]==True, lambda: self.continuous_flow_dist.log_p(v[0], cond_vars=enc_out, key=k2), lambda: 0.)
-      steps_log_p.append(log_p)
+    #   log_p = self.continuous_flow_dist.log_p(v[0], cond_vars=enc_out, key=k2)
+    #   steps_log_p.append(log_p)
     
-      v = vmap(self.obs_to_embed_list[v.shape[1]-1])(jnp.float32(v))
-      enc_input = jnp.concatenate([enc_input, v], axis=0)
+    #   v = vmap(self.obs_to_embed_list[v.shape[1]-1])(jnp.float32(v))
+    #   enc_input = jnp.concatenate([enc_input, v], axis=0)
       
-    return num_log_p + jnp.sum(jnp.stack(steps_log_p))
+    # return num_log_p + jnp.sum(jnp.stack(steps_log_p))
     
     enc_input = []
     outputs = []
@@ -281,20 +278,65 @@ class GPInference(eqx.Module):
         is_discrete+=[False]*self.num_observations
     
     enc_input = jnp.concatenate(enc_input, axis=0)[indices]
-    outputs = jnp.concatenate(outputs, axis=0)[indices][self.num_observations:]
-    is_discrete = jnp.stack(is_discrete)[indices][self.num_observations:]
-    ks = split(key, len(outputs))
+    outputs = jnp.concatenate(outputs, axis=0)[indices]
+    is_discrete = jnp.stack(is_discrete)[indices]
+    ks = split(key,  enc_input.shape[0] - self.num_observations)
     
-    masks = self.make_masks(mask, self.num_observations)
-    
-    #start from second value since the first is the observation
-    trs = [(ks[i], outputs[i], is_discrete[i], masks[i], enc_input[:i+self.num_observations]) 
-           for i in range(len(outputs))]
     all_log_p = []
-    for i in range(len(trs)):
-      log_p = self.process_trace_element(trs[i])
+    for i in range(self.num_observations, enc_input.shape[0]):
+      k1, k2 = split(ks[i], 2)
+      so_far_input = enc_input[:i]
+      mask_ = jnp.where(jnp.arange(i+1) < mask.sum(), True, False)
+      emb = self.encode(so_far_input, mask_, k1)
+      log_p = jax.lax.cond(
+        is_discrete[i],
+        #round to avoid floating point errors and cast to int for indexing
+        lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(outputs[i][0]))),
+        lambda: self.continuous_log_prob(emb, jnp.float32(outputs[i]), k2),
+      )
       all_log_p.append(log_p)
+    
     return jnp.stack(all_log_p).sum()
+      
+    
+    # masks = self.make_masks(mask, self.num_observations)
+    
+    # #start from second value since the first is the observation
+    # trs = [(ks[i], outputs[i], is_discrete[i], masks[i], enc_input[:i+self.num_observations]) 
+    #        for i in range(len(outputs))]
+    # all_log_p = []
+    # for i in range(len(trs)):
+    #   log_p = self.process_trace_element(trs[i])
+    #   all_log_p.append(log_p)
+    # return jnp.stack(all_log_p).sum()
+  
+  def encode(self, so_far_input, mask, key):
+    #TODO: remove
+    enc_input = self.add_latent_emb_and_pos_enc(so_far_input)
+    return self.input_encoder(enc_input, mask=mask, key=key)[-1]
+
+    
+  # @eqx.filter_jit
+  # def process_trace_element(self, t_i):
+  #   key, variable_value, discrete, mask, so_far_input = t_i
+  #   # add latent embedding to input
+  #   latent_emb = self.latent_input_embeddings[so_far_input.shape[0]-self.num_observations][None]
+  #   encoder_input = jnp.concatenate([so_far_input,latent_emb], axis=0)
+    
+  #   encoder_input += self.positional_encoding(*encoder_input.shape)
+    
+  #   ks_ = split(key, 2)
+  #   emb = self.input_encoder(encoder_input, key=ks_[0], mask=mask)[-1]
+    
+  #   log_p = jax.lax.cond(
+  #     discrete,
+  #     #round to avoid floating point errors and cast to int for indexing
+  #     lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(variable_value[0]))),
+  #     lambda: self.continuous_log_prob(emb, jnp.float32(variable_value), ks_[1]),
+  #   )
+  #   # log_p = jax.lax.cond(mask[-1]==True, lambda: log_p, lambda: 0.)
+  #   return log_p
+        
   
   def rsample(self, obs, key):
     # assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
@@ -361,46 +403,25 @@ class GPInference(eqx.Module):
     
     
   
-  @staticmethod
-  def make_masks(mask, num_observations):
-    '''
-    make masks for each step in the trace, attending at the observation and up to the current variable
-    ex:
-    [Array([ True], dtype=bool),
-    Array([ True,  True], dtype=bool),
-    Array([ True,  True,  True], dtype=bool),
-    Array([ True,  True,  True,  True], dtype=bool),
-    Array([ True,  True,  True,  True,  True], dtype=bool),
-    Array([ True,  True,  True,  True,  True, False], dtype=bool),
-    Array([ True,  True,  True,  True,  True, False, False], dtype=bool)]
-    '''
-    masks = []
-    for i in range(num_observations, len(mask)):
-      mask_i = jnp.where(jnp.arange(i+1)<mask.sum(), True, False)
-      masks.append(mask_i)
-    return masks
-  
-  # @eqx.filter_jit
-  def process_trace_element(self, t_i):
-    key, variable_value, discrete, mask, so_far_input = t_i
-    # add latent embedding to input
-    latent_emb = self.latent_input_embeddings[so_far_input.shape[0]-self.num_observations][None]
-    encoder_input = jnp.concatenate([so_far_input,latent_emb], axis=0)
-    
-    encoder_input += self.positional_encoding(*encoder_input.shape)
-    
-    ks_ = split(key, 2)
-    emb = self.input_encoder(encoder_input, key=ks_[0], mask=mask)[-1]
-    
-    log_p = jax.lax.cond(
-      discrete,
-      #round to avoid floating point errors and cast to int for indexing
-      lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(variable_value[0]))),
-      lambda: self.continuous_log_prob(emb, jnp.float32(variable_value), ks_[1]),
-    )
-    log_p = jax.lax.cond(mask[-1]==True, lambda: log_p, lambda: 0.)
-    return log_p
-        
+  # @staticmethod
+  # def make_masks(mask, num_observations):
+  #   '''
+  #   make masks for each step in the trace, attending at the observation and up to the current variable
+  #   ex:
+  #   [Array([ True], dtype=bool),
+  #   Array([ True,  True], dtype=bool),
+  #   Array([ True,  True,  True], dtype=bool),
+  #   Array([ True,  True,  True,  True], dtype=bool),
+  #   Array([ True,  True,  True,  True,  True], dtype=bool),
+  #   Array([ True,  True,  True,  True,  True, False], dtype=bool),
+  #   Array([ True,  True,  True,  True,  True, False, False], dtype=bool)]
+  #   '''
+  #   masks = []
+  #   for i in range(num_observations, len(mask)):
+  #     mask_i = jnp.where(jnp.arange(i+1)<mask.sum(), True, False)
+  #     masks.append(mask_i)
+  #   return masks
+
   def discrete_log_prob(self, emb, value):
     assert len(emb.shape) == 1
     assert value.shape == ()

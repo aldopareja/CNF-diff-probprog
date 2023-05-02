@@ -72,10 +72,6 @@ def sampler(key):
   _, values = body_fn(n.item()+1, ks[1])
   total = 0
   for i,v in enumerate(values):
-    # if jnp.any(jnp.isclose(v, jnp.arange(5), atol=1e-7)):
-    #   d = dist.Delta(v)
-    # else:
-    #   d = dist.Normal(v, 0.001)      
     total+=npy.sample(f"step_{i}", dist.Uniform(v,v+1), rng_key=ks[i+2])
   
   npy.deterministic("obs", total)
@@ -84,11 +80,11 @@ def sampler(key):
 def test_GP_Inference():
 
   #check if tmp/erase.pkl exists and load it
-  if os.path.exists("tmp/erase.pkl"):
-    traces = load_traces("tmp/erase.pkl")
+  if os.path.exists("tmp/2000000_dummy.pkl"):
+    traces = load_traces("tmp/2000000_dummy.pkl")
   else:
     with jax.default_device(jax.devices("cpu")[0]):
-      traces, _ = sample_many_traces(sampler, PRNGKey(132), 100000, True, max_num_variables=10)
+      traces, _ = sample_many_traces(sampler, PRNGKey(132), 10000, True, max_num_variables=10)
       serialize_traces(traces, "tmp/erase.pkl")
   
   model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,),
@@ -99,13 +95,13 @@ def test_GP_Inference():
   if os.path.exists("tmp/dummy.eqx") and False:
     model = eqx.tree_deserialise_leaves(Path("tmp/dummy.eqx"), model)
   else:
-    num_steps = 100000
+    num_steps = 10000
     optim = optax.chain(
         optax.clip_by_global_norm(5.0),
         optax.adamw(
             learning_rate=optax.cosine_onecycle_schedule(
                 num_steps,
-                0.00001,
+                0.0001,
                 0.01,
                 1e1,
                 1e2,
@@ -136,7 +132,7 @@ def test_GP_Inference():
     key = PRNGKey(573)
     out_path = Path("tmp/")
     os.makedirs(out_path, exist_ok=True)
-    for i in tqdm(range(num_steps)):
+    for i in tqdm(range(num_steps), desc="code-v2"):
         start = time.time()
         batch_traces = sample_random_batch(traces, batch_size)
         l, model, opt_state, key = make_step(
@@ -145,7 +141,7 @@ def test_GP_Inference():
         if i % 100 == 0 or i == 1:
             print("l", l, "t", end - start)
             #save model to dummy file
-            p = out_path / f"dummy.eqx"
+            p = out_path / f"dummy_codev2.eqx"
             eqx.tree_serialise_leaves(p, model)
   
   
