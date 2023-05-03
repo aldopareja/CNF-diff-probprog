@@ -89,8 +89,9 @@ def test_GP_Inference():
   model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,),
                                                                num_observations=1,
                                                                max_discrete_choices=5,
-                                                               d_model=256,
-                                                               num_enc_layers=4,))
+                                                               d_model=128,
+                                                               num_enc_layers=4,
+                                                               slow_compilation=False,))
   # check if the model has been saved already and load it
   if os.path.exists("tmp/dummy.eqx") and False:
     model = eqx.tree_deserialise_leaves(Path("tmp/dummy.eqx"), model)
@@ -132,7 +133,7 @@ def test_GP_Inference():
     key = PRNGKey(573)
     out_path = Path("tmp/")
     os.makedirs(out_path, exist_ok=True)
-    for i in tqdm(range(num_steps), desc="code-v2"):
+    for i in tqdm(range(num_steps), desc="fast_dummy_v3"):
         start = time.time()
         batch_traces = sample_random_batch(traces, batch_size)
         l, model, opt_state, key = make_step(
@@ -141,19 +142,20 @@ def test_GP_Inference():
         if i % 100 == 0 or i == 1:
             print("l", l, "t", end - start)
             #save model to dummy file
-            p = out_path / f"dummy_codev2.eqx"
+            p = out_path / f"fast_dummy_v3.eqx"
             eqx.tree_serialise_leaves(p, model)
             
 def test_gp_experiment():
     model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,2),
                                                                num_observations=100,
                                                                max_discrete_choices=4,
-                                                               d_model=256,
-                                                               num_enc_layers=4,))
+                                                               d_model=128,
+                                                               num_enc_layers=4,
+                                                               slow_compilation=False,))
     
-    traces = load_traces("tmp/100k_gp.pkl")
+    traces = load_traces("tmp/1MM_gp.pkl")
     
-    num_steps = 20000
+    num_steps = 100000
     optim = optax.chain(
         optax.clip_by_global_norm(5.0),
         optax.adamw(
@@ -190,7 +192,7 @@ def test_gp_experiment():
     key = PRNGKey(573)
     out_path = Path("tmp/")
     os.makedirs(out_path, exist_ok=True)
-    for i in tqdm(range(num_steps), desc="gp_40bs"):
+    for i in tqdm(range(num_steps), desc="fast_gp"):
         start = time.time()
         batch_traces = sample_random_batch(traces, batch_size)
         l, model, opt_state, key = make_step(
@@ -199,7 +201,7 @@ def test_gp_experiment():
         if i % 100 == 0 or i == 1:
             print("l", l, "t", end - start)
             #save model to dummy file
-            p = out_path / f"gp_40bs.eqx"
+            p = out_path / f"fast_gp.eqx"
             eqx.tree_serialise_leaves(p, model)
   
   
