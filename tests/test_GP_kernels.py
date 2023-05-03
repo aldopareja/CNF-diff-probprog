@@ -153,6 +153,8 @@ def test_gp_experiment():
                                                                num_enc_layers=4,
                                                                slow_compilation=False,))
     
+    model = eqx.tree_deserialise_leaves(Path("tmp/fast_gp.eqx"), model)
+    
     traces = load_traces("tmp/1MM_gp.pkl")
     
     num_steps = 100000
@@ -192,7 +194,7 @@ def test_gp_experiment():
     key = PRNGKey(573)
     out_path = Path("tmp/")
     os.makedirs(out_path, exist_ok=True)
-    for i in tqdm(range(num_steps), desc="fast_gp"):
+    for i in tqdm(range(num_steps), desc="1MM_gp"):
         start = time.time()
         batch_traces = sample_random_batch(traces, batch_size)
         l, model, opt_state, key = make_step(
@@ -201,7 +203,7 @@ def test_gp_experiment():
         if i % 100 == 0 or i == 1:
             print("l", l, "t", end - start)
             #save model to dummy file
-            p = out_path / f"fast_gp.eqx"
+            p = out_path / f"1MM_gp.eqx"
             eqx.tree_serialise_leaves(p, model)
   
   
