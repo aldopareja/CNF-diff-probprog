@@ -13,6 +13,7 @@ from pathlib import Path
 import pickle
 import numpy as np
 from jax import tree_util as jtu
+import equinox as eqx
 
 def get_trace(args):
   m,k = args
@@ -154,12 +155,20 @@ def load_traces(path="tmp/dummy_data.pkl"):
   traces = pickle.load(open(p, "rb"))
   return traces
 
+# @eqx.filter_jit
+# def collate_batch(traces, idx):
+#   '''
+#     collates a batch of traces into a single pytree
+#   '''
+#   batch = jtu.tree_map(lambda *ts: jnp.stack(ts), *[traces[i] for i in idx])
+#   return jtu.tree_map(jnp.array, batch)
+
 def sample_random_batch(traces, num_traces):
   '''
     samples a random batch of traces from a list of traces.
     returns a stacked single pytree
   '''
   idx = np.random.choice(len(traces), num_traces)
-  batch = jtu.tree_map(lambda *ts: np.stack(ts), *[traces[i] for i in idx])
+  batch = jtu.tree_map(lambda *ts: jnp.stack(ts), *[traces[i] for i in idx])
   return jtu.tree_map(jnp.array, batch)
   

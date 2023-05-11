@@ -75,9 +75,10 @@ if __name__ == "__main__":
   tr = trace(bayesian_linear_regression).get_trace(PRNGKey(0), 0.1, 10.0, jnp.arange(6.0)+1)
 
   sampler_ = lambda key: bayesian_linear_regression(key, 0.1, 10.0, jnp.arange(6.0)+1)
-  traces, default_trace, means_and_stds = sample_many_traces(sampler_, PRNGKey(0), 100000, True, max_num_variables=100, max_traces_for_default_trace=10000)
+  traces, default_trace, means_and_stds = sample_many_traces(sampler_, PRNGKey(0), 1000000, True, max_num_variables=100, max_traces_for_default_trace=10000)
 
-  serialize_traces(traces, "experiments/bayesian_linear_regression/traces.pkl")
-  serialize_traces(means_and_stds, "experiments/bayesian_linear_regression/means_and_stds.pkl")
+  serialize_traces(traces[:-1000], "experiments/bayesian_regression/data/train_1MM.pkl")
+  serialize_traces(traces[-1000:], "experiments/bayesian_regression/data/test_1MM.pkl")
+  serialize_traces(means_and_stds, "experiments/bayesian_regression/data/means_and_stds.pkl")
     
   from IPython import embed; embed(using=False)
