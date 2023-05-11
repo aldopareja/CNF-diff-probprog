@@ -1,8 +1,8 @@
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from dataclasses import dataclass
 from functools import partial
 import math
-from typing import List, Tuple
+from typing import Dict, List, NamedTuple, Tuple
 import jax
 import numpyro as npy
 from numpyro import distributions as dist
@@ -12,12 +12,14 @@ from jax import jit, vmap
 from jax import lax
 from jax.random import PRNGKey, split
 from jaxtyping import Array
+from numpyro.handlers import trace, substitute, replay
 
 from src.encoder import Encoder, EncoderCfg
 from src.real_nvp import RealNVP_Flow
 #TODO: I should use numpyro
 from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
+tfb = tfp.bijectors
 
 
 class RationalQuadraticKernel(eqx.Module):
@@ -111,8 +113,8 @@ class ObsDistribution(dist.Distribution):
     return jnp.stack([x, y], axis=1)
 
   def log_prob(self, value):
-    assert value.shape == (2, self.num)
-    x, y = value[0,:], value[1,:]
+    assert value.shape == (self.num,2)
+    x, y = value[:,0], value[:,1]
     
     # Calculate the log probability of x values from a Uniform distribution
     log_prob_x = dist.Uniform(0, 1).log_prob(x).sum()
@@ -134,21 +136,27 @@ class ObsDistribution(dist.Distribution):
     cov = cov + jnp.eye(cov.shape[0]) * (1e-6 + std)
     return cov
   
+  
         
 def sample_observations(key:PRNGKey, kernel_fn, num:int) -> jnp.ndarray:
   ks = split(key, 2)
   obs_dist = ObsDistribution(kernel_fn, num, std=npy.sample('std', dist.HalfNormal(1), rng_key=ks[0]))
   obs_ = obs_dist.sample(ks[1])
   obs = npy.sample('obs', obs_dist, obs=obs_)
-  return obs
+  return obs, obs_dist
 
-def model(key:PRNGKey):
+def model(key:PRNGKey, return_dist=False):
   ks = split(key, 3)
   kernel = sample_kernel(ks[0])
-  return sample_observations(ks[3], kernel, 100)
+  obs, obs_dist =  sample_observations(ks[3], kernel, 100)
+  if return_dist:
+    return obs, obs_dist
+  else:
+    return obs
 
 @dataclass
 class GPInferenceCfg:
+  means_and_stds: NamedTuple = None
   d_model:int = 256
   dropout_rate:float = 0.1
   discrete_mlp_width:int = 512
@@ -159,17 +167,17 @@ class GPInferenceCfg:
   num_enc_layers:int=4
   max_discrete_choices:int =5
   num_input_variables:Tuple[int] = (1,2)
-  num_observations:int =100
-  slow_compilation:bool = False
+  num_observations:int =100 
+  
 
 class GPInference(eqx.Module):
   input_encoder: Encoder
   continuous_flow_dist: RealNVP_Flow
   discrete_mlp_dist: eqx.nn.MLP
-  obs_to_embed_list: List[eqx.nn.MLP]
+  obs_to_embed_dict: Dict[str,eqx.nn.MLP]
   num_input_variables: Tuple[int]
   num_observations: int
-  slow_compilation: bool = False
+  means_and_stds: eqx.static_field()
   
   def __init__(
     self,
@@ -202,18 +210,18 @@ class GPInference(eqx.Module):
       num_augments=c.continuous_flow_num_augment,
       num_latents = 1,
       num_conds = c.d_model,
-      key = ks[2]
+      key = ks[2],
     )
     
-    self.obs_to_embed_list = [eqx.nn.Linear(in_features=i,
+    self.obs_to_embed_dict = {i: eqx.nn.Linear(in_features=i,
                                           out_features=c.d_model,
                                           key=k) 
                               for i,k in zip(c.num_input_variables,
-                                             split(ks[3], len(c.num_input_variables)))]
+                                             split(ks[3], len(c.num_input_variables)))}
     
     self.num_input_variables = c.num_input_variables
     self.num_observations = c.num_observations
-    self.slow_compilation = c.slow_compilation
+    self.means_and_stds = c.means_and_stds
     
   def log_p(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
@@ -221,18 +229,33 @@ class GPInference(eqx.Module):
     enc_input = []
     outputs = []
     is_discrete = []
+    output_log_det_jacobian = []
     
     for k,v in variables.items():
       v = v['value']
       assert len(v.shape) == 2 and v.shape[1] in self.num_input_variables
-      input = vmap(self.obs_to_embed_list[v.shape[1]-1])(jnp.float32(v))
+      float_v = jnp.float32(v)
+      mu_and_std = getattr(self.means_and_stds, k)
+      bijector = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
+                              tfb.Scale(scale=mu_and_std.std)])
+      
+      is_discrete_i = jax.lax.cond(v.dtype == jnp.int32, lambda: True, lambda: False)
+      input= jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
+      input = vmap(self.obs_to_embed_dict[v.shape[1]])(input)
       enc_input.append(input)
+      
       if k != 'obs':
         assert v.shape[1] == 1, 'only single dimensional latents are supported, consider flattening multivariate samples'
-        outputs.append(jnp.float32(v))
-        is_discrete.append(jax.lax.cond(v.dtype == jnp.int32, lambda: True, lambda: False))
+        is_discrete.append(is_discrete_i)
+
+        log_det_i = jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,1)), lambda: bijector.inverse_log_det_jacobian(float_v))
+        output_log_det_jacobian.append(log_det_i)
+        #use a bijector to standardize the output for the flow
+        float_v = jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
+        outputs.append(float_v)
       else:
         outputs.append(jnp.zeros((self.num_observations, 1)))
+        output_log_det_jacobian.append(jnp.zeros((self.num_observations, 1)))
         is_discrete+=[False]*self.num_observations
     
     #shift inputs and outputs by one so output_i is conditioned on input_i
@@ -240,23 +263,19 @@ class GPInference(eqx.Module):
     enc_input += self.positional_encoding(*enc_input.shape)
     
     outputs = jnp.concatenate(outputs, axis=0)[indices]
+    output_log_det_jacobian = jnp.concatenate(output_log_det_jacobian, axis=0)[indices]
     is_discrete = jnp.stack(is_discrete)[indices]
     
     outputs = outputs[self.num_observations:]
     is_discrete = is_discrete[self.num_observations:]
+    output_log_det_jacobian = output_log_det_jacobian[self.num_observations:].reshape(-1)
     
     key, sk = split(key)
     
-    if self.slow_compilation:
-      #remove the last element of the input and mask since the ith element of the output should be conditioned on the ith-1 element of the input
-      embs = self.get_causal_embs_slow(enc_input, mask, key)
-    else:
-      embs = self.get_causal_embs(enc_input, mask, sk)
+    embs = self.get_causal_embs(enc_input, mask, sk)
     
-    all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, split(key, len(is_discrete)))
+    all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
     return all_log_p.sum()
-    
-    raise NotImplementedError()
   
   @staticmethod
   def get_causal_mask(mask, i):
@@ -265,25 +284,14 @@ class GPInference(eqx.Module):
     return jnp.where(jnp.arange(mask.shape[0]) < i, True, False)*mask
   
   @eqx.filter_jit
-  def get_causal_log_p(self, emb, is_discrete_i, output_i, key):
+  def get_causal_log_p(self, emb, is_discrete_i, output_i, inverse_log_det_jac_i, key):
     log_p = jax.lax.cond(
       is_discrete_i,
       #round to avoid floating point errors and cast to int for indexing
       lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(output_i[0]))),
-      lambda: self.continuous_log_prob(emb, jnp.float32(output_i), key),
+      lambda: self.continuous_log_prob(emb, jnp.float32(output_i), key, init_logp=inverse_log_det_jac_i),
     )
     return log_p
-  
-  @eqx.filter_jit
-  def get_causal_embs_slow(self, enc_input, mask, key):
-    ks = split(key, enc_input.shape[0]-self.num_observations)
-    embs = []
-    for i in range(self.num_observations, enc_input.shape[0]):
-      mask_ = mask[:i]
-      enc_input_ = enc_input[:i]
-      emb = self.input_encoder(enc_input_, mask=mask_, key=ks[i])[-1]
-      embs.append(emb)
-    return jnp.stack(embs)
   
   @eqx.filter_jit
   def get_causal_embs(self, enc_input, mask, key):
@@ -303,8 +311,8 @@ class GPInference(eqx.Module):
     log_p = logits[value] - jax.nn.logsumexp(logits)
     return log_p
 
-  def continuous_log_prob(self, emb, value, key):
-    return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key)
+  def continuous_log_prob(self, emb, value, key, init_logp=0.0):
+    return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
   
   @staticmethod
   @eqx.filter_jit
@@ -325,40 +333,54 @@ class GPInference(eqx.Module):
     pos_vals = jnp.arange(num_tokens)
     pos_enc, _ = lax.scan(lambda c, pos: outer_loop_fn(c, pos, d_model), pos_enc, pos_vals)
     return pos_enc
+
+  @staticmethod
+  def get_next_latent(exec_trace, sampled_latents):
+    for k,v in exec_trace.items():
+      if k not in sampled_latents:
+        return k,v
+    return None, None
   
-  def rsample(self, obs, key):
+  def add_new_variable_to_sequence(self, new_variable, *, enc_input=None, key=None):
+    #handle the case where the new variable is a scalar
+    if new_variable.shape == ():
+      new_variable = new_variable[None][None]
+      
+    enc_var = vmap(self.obs_to_embed_list[new_variable.shape[1]-1])(jnp.float32(new_variable))
+    if enc_input is None:
+      enc_input = jnp.zeros((0, enc_var.shape[1]))
+    enc_input = jnp.concatenate([enc_input, enc_var])
+    enc_input_ = enc_input + self.positional_encoding(*enc_input.shape)
+    emb = self.input_encoder(enc_input_, mask=jnp.ones(len(enc_input_),dtype=jnp.bool_),key=key)[-1]
+    return emb, enc_input
+  
+  def rsample(self, obs, gen_model_sampler,key):
     # assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
-    key, sk1,sk2 = split(key,3)
-    
-    enc_input = vmap(self.obs_to_embed_list[obs.shape[1]-1])(jnp.float32(obs))
-    latent_emb = self.latent_input_embeddings[enc_input.shape[0]-self.num_observations][None]
-    
-    encoder_input = jnp.concatenate([enc_input,latent_emb], axis=0)
-    
-    encoder_input += self.positional_encoding(*encoder_input.shape)
-    emb = self.input_encoder(encoder_input, key=sk1, mask=jnp.ones(len(encoder_input),dtype=jnp.bool_))[-1]
-    logits = self.discrete_mlp_dist(emb)
-    num_samples = tfd.Categorical(logits=logits).sample(seed=sk2).item()
-    sample = {'num_samples': num_samples}
-    
-    num_samples_ = jnp.array(num_samples,dtype=jnp.float32)[None]
-    num_samples_ = self.obs_to_embed_list[0](num_samples_)[None]
-    enc_input = jnp.concatenate([enc_input, num_samples_], axis=0)
-    
-    for i in range(num_samples+1):
-      key, sk1, sk2 = split(key,3)
-      latent_emb = self.latent_input_embeddings[enc_input.shape[0]-self.num_observations][None]
-      encoder_input = jnp.concatenate([enc_input,latent_emb], axis=0)
-      encoder_input += self.positional_encoding(*encoder_input.shape)
-      emb = self.input_encoder(encoder_input, key=sk1, mask=jnp.ones(len(encoder_input),dtype=jnp.bool_))[-1]
+    key, sk1, sk2 = split(key,3)    
+    emb, enc_input = self.add_new_variable_to_sequence(obs, key=sk1)
+        
+    exec_trace = trace(gen_model_sampler).get_trace(sk2)
+    sampled_latents = {}
+    while True:
+      k,v = self.get_next_latent(exec_trace, sampled_latents)
+      if k is None or k=='obs':
+        break
       
-      val = self.continuous_flow_dist.rsample(key=sk2, cond_vars=emb)
-      sample[f'sample_{i}'] = val.item()
+      key, sk1, sk2, sk3 = split(key, 4)
+      is_discrete = v['value'].dtype in (jnp.int32, jnp.int64)
+      if is_discrete:
+        logits = self.discrete_mlp_dist(emb)
+        sample = tfd.Categorical(logits=logits).sample(seed=sk1)
+      else:
+        sample = self.continuous_flow_dist.rsample(key=sk1, cond_vars=emb)[0]
       
-      val_ = self.obs_to_embed_list[0](jnp.float32(val))
-      enc_input = jnp.concatenate([encoder_input, val_[None]], axis=0)
+      emb, enc_input = self.add_new_variable_to_sequence(sample, enc_input=enc_input, key=sk2)
+      sampled_latents[k] = sample
       
-    return sample
+      sub_model = substitute(gen_model_sampler, sampled_latents)
+      exec_trace = trace(sub_model).get_trace(sk3)
+    
+    return sampled_latents, exec_trace
 
         
     
