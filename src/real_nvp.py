@@ -126,11 +126,55 @@ class RealNVPLayer(eqx.Module):
     log_det_jac = -log_scale.sum()
     
     return jnp.concatenate([x_0, x_1]), log_det_jac
+  
+class Normalizer(eqx.Module):
+  normalizer_nn: GatedDenseNet
+  
+  def __init__(self, *, num_latents, num_conds, hidden_size, key):
+    self.normalizer_nn = GatedDenseNet(
+      num_layers=1,
+      in_size=num_conds,
+      out_size=num_latents*2,
+      hidden_size=hidden_size,
+      key=key,
+    )
+  
+  def forward(self, x, cond_vars):
+    assert x.ndim == 1
+    mu, sigma = self.normalizer_nn(cond_vars).split(2)
+    sigma = jax.nn.softplus(sigma)
+    means_, stds_ = map(jax.lax.stop_gradient,
+                        (mu, sigma))
+    bijector = tfb.Chain([tfb.Shift(means_), tfb.Scale(stds_)])
+    return bijector.forward(x), bijector.forward_log_det_jacobian(x).sum()
+  
+  def reverse(self, y, cond_vars):
+    assert y.ndim == 1
+    mu, sigma = self.normalizer_nn(cond_vars).split(2)
+    sigma = jax.nn.softplus(sigma)
+    means_, stds_ = map(jax.lax.stop_gradient,
+                        (mu, sigma))
+    bijector = tfb.Chain([tfb.Shift(means_), tfb.Scale(stds_)])
+    return bijector.inverse(y), bijector.inverse_log_det_jacobian(y).sum()
+  
+  def gaussian_log_p(self, x, cond_vars):
+    assert x.ndim == 1
+    mu, sigma = self.normalizer_nn(cond_vars).split(2)
+    sigma = jax.nn.softplus(sigma)
+    bijector = tfb.Chain([tfb.Shift(mu), tfb.Scale(sigma)])
+    log_p = bijector.inverse_log_det_jacobian(x)
+    x_ = bijector.inverse(x)
+    log_p += tfd.Normal(loc=jnp.zeros_like(mu),
+                        scale=jnp.ones_like(sigma)).log_prob(x_)
+    return log_p.sum()
+  
+  
     
 class RealNVP_Flow(eqx.Module):
   blocks: List[RealNVPLayer]
   num_latents: int
   num_augments: int
+  normalizers: List[Normalizer]
   
   def __init__(self,*,num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds,key):
     ks = split(key, num_blocks)
@@ -140,22 +184,29 @@ class RealNVP_Flow(eqx.Module):
                                 hidden_size=block_hidden_size,
                                 key=ks[i])
                    for i in range(num_blocks)]
+    self.normalizers = [Normalizer(num_latents=num_latents + num_augments,
+                                   num_conds=num_conds,
+                                   hidden_size=block_hidden_size,
+                                   key=ks[i])
+                        for i in range(num_blocks)]
     self.num_latents = num_latents
     self.num_augments = num_augments
     
   # @eqx.filter_jit
   def log_p(self, z, cond_vars, key, init_logp=0.0):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
-    
+    normalizer_log_p = 0.0
     log_prob = init_logp
     z_aug = augment_sample(key, z, self.num_augments)
-    for block in reversed(self.blocks):
+    for normalizer,block in zip(reversed(self.normalizers),reversed(self.blocks)):
+      normalizer_log_p += normalizer.gaussian_log_p(z_aug, cond_vars)
+      z_aug, inv_log_det_jac_normalizer = normalizer.reverse(z_aug, cond_vars)
       z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
-      log_prob += inv_log_det_jac
+      log_prob += inv_log_det_jac + inv_log_det_jac_normalizer
       
     log_prob += tfd.Normal(0, 1).log_prob(z_aug).sum() 
     
-    return log_prob
+    return log_prob + normalizer_log_p/len(self.normalizers)
   
   @eqx.filter_jit
   def rsample(self, key, cond_vars):
@@ -163,7 +214,8 @@ class RealNVP_Flow(eqx.Module):
       seed = key, sample_shape=(self.num_latents + self.num_augments,)
     )
     
-    for block in self.blocks:
+    for block, normalizer in zip(self.blocks,self.normalizers):
       z, _ = block.forward(z, cond_vars)
+      z, _ = normalizer.forward(z, cond_vars)
       
     return z[:self.num_latents]

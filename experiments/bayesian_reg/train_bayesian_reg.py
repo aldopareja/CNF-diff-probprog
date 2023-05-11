@@ -21,7 +21,7 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 
 if __name__ == "__main__":
-  traces = load_traces("experiments/bayesian_reg/traces.pkl")
+  traces = load_traces("experiments/bayesian_reg/data/train_1MM.pkl")
   means_and_stds = load_traces("experiments/bayesian_reg/means_and_stds.pkl")
   means_and_stds = dict_to_namedtuple(means_and_stds)
   
@@ -41,7 +41,7 @@ if __name__ == "__main__":
   )
   inference = gpk.GPInference(key=PRNGKey(0),c=c)
   
-  inference = eqx.tree_deserialise_leaves("tmp/100k_blr_0005.eqx", inference)
+  # inference = eqx.tree_deserialise_leaves("tmp/100k_blr_0005.eqx", inference)
   
   inference.log_p(traces[1], PRNGKey(0))
   
