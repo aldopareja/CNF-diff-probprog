@@ -21,7 +21,7 @@ import equinox as eqx
 from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
-from utils import AttrDict, ks_test
+from src.utils import AttrDict, ks_test
 from aritmetic_bayesian_network import bayesian_network, InferenceForBayesianNetwork
 
 def initialize_model(
