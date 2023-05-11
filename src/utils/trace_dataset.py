@@ -7,13 +7,8 @@ import jax
 from jax.random import split, PRNGKey
 from numpyro.handlers import trace
 import multiprocessing as mp
-import dill
-dill.Pickler.dumps, dill.Pickler.loads = dill.dumps, dill.loads
-mp.reduction.ForkingPickler = dill.Pickler
-mp.reduction.dump = dill.dump
 from jax import numpy as jnp
 from tqdm import tqdm
-import equinox as eqx
 from pathlib import Path
 import pickle
 import numpy as np
@@ -24,7 +19,7 @@ def get_trace(args):
   exec_trace = trace(m).get_trace(k)
   return exec_trace
 
-def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=14, default_trace=None):
+def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=14, default_trace=None, traces=None, use_dill=True, max_traces_for_default_trace=1000):
   '''
     samples many traces from a model and process the results into a list of dicts. Use this function to get a dataset to train an amortized inference model.
     better to set CUDA_VISIBLE_DEVICES="" to avoid problems with multiprocessing.
@@ -40,20 +35,26 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
   '''
   with jax.default_device(jax.devices('cpu')[0]):
     
-    #model, key, total_length
-    ks = split(key, num_traces)
-    args = zip(repeat(m),ks)
-    
-    if parallel:
-      with mp.Pool(mp.cpu_count()//4) as p:
-        traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=200))
-    else:
-      traces = list(map(get_trace, tqdm(args, total=num_traces)))
+    if traces is None:
+      if use_dill:
+        import dill
+        dill.Pickler.dumps, dill.Pickler.loads = dill.dumps, dill.loads
+        mp.reduction.ForkingPickler = dill.Pickler
+        mp.reduction.dump = dill.dump
+      #model, key, total_length
+      ks = split(key, num_traces)
+      args = zip(repeat(m),ks)
       
+      if parallel:
+        with mp.Pool(mp.cpu_count()//4) as p:
+          traces = list(p.imap_unordered(get_trace, tqdm(args, total=num_traces, desc='sampling traces'),chunksize=200))
+      else:
+        traces = list(map(get_trace, tqdm(args, total=num_traces)))
+        
     traces = list(filter(lambda t: len(t) <= max_num_variables, traces))
     
     if default_trace is None:
-      default_trace = build_default_trace(traces)
+      default_trace, mean_and_std = build_default_trace(traces, max_traces_for_default_trace)
       
     if parallel:
       with mp.Pool(mp.cpu_count()//4) as p:
@@ -62,7 +63,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
                                       chunksize=100))
     else:
       traces = list(map(get_trace_order_and_values, zip(traces, repeat(default_trace))))
-    return traces, default_trace
+    return traces, default_trace, mean_and_std
 
 def get_trace_order_and_values(args):
   ''' process a trace to make it compatible with the default trace.
@@ -104,25 +105,41 @@ def get_trace_order_and_values(args):
 
 def get_necessary_variable_info(v):
   shape = v['value'].shape
+  if len(shape) == 1:
+    shape = (1,shape[0])
   shape = (1,1) if shape == () else shape
   assert len(shape) == 2, "a variable shape should be seq_len, num_dims"
   def_value = np.zeros(shape, dtype=v['value'].dtype)
   # is_discrete = v['value'].dtype.kind in ('i', 'u')
   return dict(value=def_value)
 
-def build_default_trace(traces):
+def build_default_trace(traces, max_traces_to_use):
   default_trace = OrderedDict()
-  for t in traces:
+  mean_and_std = defaultdict(list)
+  for i,t in tqdm(enumerate(traces)):
     for k,v in t.items():
       if k not in default_trace:
         default_trace[k] = get_necessary_variable_info(v)
+      #reshape as the default trace
+      mean_and_std[k].append(v['value'].reshape(*default_trace[k]['value'].shape))
+    if i > max_traces_to_use:
+      break
+  
+  for k,v in mean_and_std.items():
+    v = np.concatenate(v)
+    if default_trace[k]['value'].dtype in (np.float32, np.float64):
+      mean_and_std[k] = {'mean': np.mean(v, axis=0, keepdims=True), 'std': np.std(v, axis=0, keepdims=True)}
+    else:
+      #remove the key if it is not a float
+      mean_and_std[k] = {'mean': np.zeros((1,1), np.float32), 'std': np.ones((1,1), np.float32)}
+        
   default_trace = OrderedDict(sorted(default_trace.items(), key=lambda t: t[0]))
   
   current_idx = 0
   for k,v in default_trace.items():
     v['indices'] = np.arange(current_idx, current_idx + v['value'].shape[0])
     current_idx += v['value'].shape[0]
-  return default_trace
+  return default_trace, dict(**mean_and_std)
 
 #serialize traces to disk with pickle
 def serialize_traces(traces, path="tmp/dummy_data.pkl"):
