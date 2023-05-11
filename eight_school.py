@@ -12,7 +12,7 @@ import equinox as eqx
 from tensorflow_probability.substrates import jax as tfp; tfd = tfp.distributions
 
 from real_nvp import RealNVP_Flow
-from utils import AttrDict, initialize_optim, ks_test, standardize, unstandardize
+from src.utils import AttrDict, initialize_optim, ks_test, standardize, unstandardize
 
 '''
 computed from 10000 samples from the model

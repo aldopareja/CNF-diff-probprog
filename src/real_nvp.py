@@ -7,6 +7,7 @@ from jaxtyping import Array
 
 from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
+tfb = tfp.bijectors
 
 import equinox as eqx
 
@@ -131,7 +132,7 @@ class RealNVP_Flow(eqx.Module):
   num_latents: int
   num_augments: int
   
-  def __init__(self,*,num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds, key):
+  def __init__(self,*,num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds,key):
     ks = split(key, num_blocks)
     self.blocks = [RealNVPLayer(num_layers=num_layers_per_block,
                                 num_variables=num_latents+num_augments,
@@ -143,11 +144,11 @@ class RealNVP_Flow(eqx.Module):
     self.num_augments = num_augments
     
   # @eqx.filter_jit
-  def log_p(self, z, cond_vars, key):
+  def log_p(self, z, cond_vars, key, init_logp=0.0):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
-    z_aug = augment_sample(key, z, self.num_augments)
-    log_prob = 0
     
+    log_prob = init_logp
+    z_aug = augment_sample(key, z, self.num_augments)
     for block in reversed(self.blocks):
       z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
       log_prob += inv_log_det_jac

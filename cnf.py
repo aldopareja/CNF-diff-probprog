@@ -16,7 +16,7 @@ import diffrax
 from functools import partial
 
 
-from utils import augment_sample
+from src.utils import augment_sample
 
 
 class ConcatSquash(eqx.Module):
