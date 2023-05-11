@@ -41,9 +41,11 @@ if __name__ == "__main__":
   )
   inference = gpk.GPInference(key=PRNGKey(0),c=c)
   
+  inference = eqx.tree_deserialise_leaves("100k_blr_0005.eqx", inference)
+  
   inference.log_p(traces[1], PRNGKey(0))
   
-  num_steps = 10000
+  num_steps = 100000
   optim = optax.chain(
       optax.clip_by_global_norm(5.0),
       optax.adamw(
@@ -65,7 +67,7 @@ if __name__ == "__main__":
   key = PRNGKey(573)
   out_path = Path("tmp/")
   os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps), desc="100k_blr_0005"):
+  for i in tqdm(range(num_steps), desc="100k_blr_0005_2"):
       start = time()
       batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -74,7 +76,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"100k_blr_0005.eqx"
+        p = out_path / f"100k_blr_0005_2.eqx"
         eqx.tree_serialise_leaves(p, inference)
   
   

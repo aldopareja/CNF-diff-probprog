@@ -171,13 +171,14 @@ class GPInferenceCfg:
   
 
 class GPInference(eqx.Module):
+  normalizer_mlp: eqx.nn.MLP
   input_encoder: Encoder
   continuous_flow_dist: RealNVP_Flow
   discrete_mlp_dist: eqx.nn.MLP
   obs_to_embed_dict: Dict[str,eqx.nn.MLP]
   num_input_variables: Tuple[int]
   num_observations: int
-  means_and_stds: eqx.static_field()
+  means_and_stds: eqx.static_field() 
   
   def __init__(
     self,
@@ -185,7 +186,7 @@ class GPInference(eqx.Module):
     key: PRNGKey,
     c: GPInferenceCfg = GPInferenceCfg(),
   ):
-    ks = split(key, 4)
+    ks = split(key, 5)
     
     ec = EncoderCfg(num_enc_layers=c.num_enc_layers,
                     d_model=c.d_model,
@@ -201,6 +202,14 @@ class GPInference(eqx.Module):
       width_size= c.discrete_mlp_width,
       depth= c.discrete_mlp_depth,
       key = ks[1]
+    )
+    
+    self.normalizer_mlp = eqx.nn.MLP(
+      in_size = c.d_model,
+      out_size = 2,
+      width_size= c.discrete_mlp_width,
+      depth= c.discrete_mlp_depth,
+      key = ks[4]
     )
     
     self.continuous_flow_dist = RealNVP_Flow(
@@ -274,8 +283,35 @@ class GPInference(eqx.Module):
     
     embs = self.get_causal_embs(enc_input, mask, sk)
     
+    mu, sigma = vmap(self.normalizer_mlp)(embs).split(2, axis=-1)
+    sigma = jax.nn.softplus(sigma)
+    
+    normalizer_log_p = vmap(self.get_normalizer_log_p)(mu, sigma, outputs, is_discrete)
+    
+    outputs, output_log_det_jacobian = vmap(self.normalize_with_bijector)(outputs, output_log_det_jacobian, mu, sigma, is_discrete)
+    
     all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
-    return all_log_p.sum()
+    return (all_log_p + normalizer_log_p).sum()
+  
+  def get_normalizer_log_p(self, mu_i, sigma_i, output_i, is_discrete_i):
+    assert mu_i.shape == sigma_i.shape == output_i.shape == (1,)
+    bijector = tfb.Chain([tfb.Shift(shift=mu_i),
+                          tfb.Scale(scale=sigma_i)])
+    log_p = jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,)), lambda: bijector.inverse_log_det_jacobian(output_i)).squeeze()
+    output_i = jax.lax.cond(is_discrete_i, lambda: output_i, lambda: bijector.inverse(output_i))
+    log_p += jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,)), 
+                          lambda: tfp.distributions.Normal(loc=0.0, scale=1.0).log_prob(output_i)).squeeze()
+    return  log_p
+  
+  def normalize_with_bijector(self, output_i, output_log_det_jacobian_i, mu_i, sigma_i, is_discrete_i):
+    mu_, sigma_ = map(jax.lax.stop_gradient, (mu_i, sigma_i))
+    stoped_bijector = tfb.Chain([tfb.Shift(shift=mu_),
+                          tfb.Scale(scale=sigma_)])
+    output_log_det_jacobian_i += jax.lax.cond(is_discrete_i, lambda: jnp.zeros_like(output_i), 
+                                              lambda: stoped_bijector.inverse_log_det_jacobian(output_i)).squeeze()
+    output_i = jax.lax.cond(is_discrete_i, lambda: output_i, lambda: stoped_bijector.inverse(output_i))
+    
+    return output_i, output_log_det_jacobian_i
   
   @staticmethod
   def get_causal_mask(mask, i):
@@ -341,23 +377,53 @@ class GPInference(eqx.Module):
         return k,v
     return None, None
   
-  def add_new_variable_to_sequence(self, new_variable, *, enc_input=None, key=None):
+  @eqx.filter_jit
+  def add_new_variable_to_sequence(self, new_variable, *, enc_input=None, key=None, name=None):
     #handle the case where the new variable is a scalar
     if new_variable.shape == ():
       new_variable = new_variable[None][None]
       
-    enc_var = vmap(self.obs_to_embed_list[new_variable.shape[1]-1])(jnp.float32(new_variable))
+    float_v = jnp.float32(new_variable)
+    mu_and_std = getattr(self.means_and_stds, name)
+    bijector = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
+                            tfb.Scale(scale=mu_and_std.std)])
+    
+    is_discrete_i = jax.lax.cond(new_variable.dtype == jnp.int32, lambda: True, lambda: False)
+    input= jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
+    input = vmap(self.obs_to_embed_dict[new_variable.shape[1]])(input)
+    
     if enc_input is None:
-      enc_input = jnp.zeros((0, enc_var.shape[1]))
-    enc_input = jnp.concatenate([enc_input, enc_var])
+      enc_input = jnp.zeros((0, input.shape[1]))
+    enc_input = jnp.concatenate([enc_input, input])
     enc_input_ = enc_input + self.positional_encoding(*enc_input.shape)
     emb = self.input_encoder(enc_input_, mask=jnp.ones(len(enc_input_),dtype=jnp.bool_),key=key)[-1]
     return emb, enc_input
   
+  @eqx.filter_jit
+  def sample_continuous(self, emb, *, key, name):
+    ks = split(key, 2)
+    z = self.continuous_flow_dist.rsample(key=ks[0], cond_vars=emb)
+    
+    mu, sigma = self.normalizer_mlp(emb).split(2, axis=-1)
+    sigma = jax.nn.softplus(sigma)
+    normalizing_bijector = tfb.Chain([tfb.Shift(shift=mu),
+                            tfb.Scale(scale=sigma)])
+    
+    z = normalizing_bijector.forward(z)
+    
+    mu_and_std = getattr(self.means_and_stds, name)
+    bijector_last = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
+                            tfb.Scale(scale=mu_and_std.std)])
+    
+    z = bijector_last.forward(z).squeeze()
+    
+    return z
+    
+  
   def rsample(self, obs, gen_model_sampler,key):
     # assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
     key, sk1, sk2 = split(key,3)    
-    emb, enc_input = self.add_new_variable_to_sequence(obs, key=sk1)
+    emb, enc_input = self.add_new_variable_to_sequence(obs, key=sk1, name='obs')
         
     exec_trace = trace(gen_model_sampler).get_trace(sk2)
     sampled_latents = {}
@@ -372,9 +438,9 @@ class GPInference(eqx.Module):
         logits = self.discrete_mlp_dist(emb)
         sample = tfd.Categorical(logits=logits).sample(seed=sk1)
       else:
-        sample = self.continuous_flow_dist.rsample(key=sk1, cond_vars=emb)[0]
+        sample = self.sample_continuous(emb, key=sk1, name=k)
       
-      emb, enc_input = self.add_new_variable_to_sequence(sample, enc_input=enc_input, key=sk2)
+      emb, enc_input = self.add_new_variable_to_sequence(sample, enc_input=enc_input, key=sk2, name=k)
       sampled_latents[k] = sample
       
       sub_model = substitute(gen_model_sampler, sampled_latents)
