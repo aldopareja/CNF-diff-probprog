@@ -17,8 +17,7 @@ import equinox as eqx
 import jax
 from src.utils.trace_dataset import load_traces, sample_random_batch, sample_many_traces, serialize_traces
 
-
-
+import logging
 
 
 def test_sample_kernel():
@@ -201,7 +200,8 @@ def test_gp_experiment():
                                             model, opt_state, key, batch_traces)
         end = time.time()
         if i % 100 == 0 or i == 1:
-            print("l", l, "t", end - start)
+            logging.info("l %s t %s", l, end - start)
+            # print("l", l, "t", end - start)
             #save model to dummy file
             p = out_path / f"1MM_gp.eqx"
             eqx.tree_serialise_leaves(p, model)
