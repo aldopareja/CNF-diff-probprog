@@ -4,16 +4,6 @@ from jax import vmap
 from jax.random import PRNGKey, split
 import jax
 
-
-def eval_batch(model, trs, key):
-    # get the shape of the first leaf of trs
-    model = eqx.tree_inference(model, value=True)
-    num_traces = jax.tree_leaves(trs)[0].shape[0]
-    log_p = vmap(model.log_p)(trs, split(key,num_traces)).mean()
-    model = eqx.tree_inference(model, value=False)
-    return -log_p
-    
-
 @eqx.filter_value_and_grad
 def loss(model, trs, ks):
     log_p = vmap(model.log_p)(trs, ks)

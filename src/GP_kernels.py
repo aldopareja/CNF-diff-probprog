@@ -290,7 +290,7 @@ class GPInference(eqx.Module):
     
     outputs, output_log_det_jacobian = vmap(self.normalize_with_bijector)(outputs, output_log_det_jacobian, mu, sigma, is_discrete)
     
-    # self.continuous_log_prob(embs[1], outputs[1], key, output_log_det_jacobian[1])
+    self.continuous_log_prob(embs[1], outputs[1], key, output_log_det_jacobian[1])
     
     all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
     return (all_log_p + normalizer_log_p).sum()
