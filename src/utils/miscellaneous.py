@@ -1,3 +1,4 @@
+from collections import namedtuple
 from jax.random import PRNGKey
 from jax import numpy as jnp
 from jax import vmap
@@ -7,6 +8,9 @@ tfd = tfp.distributions
 import optax
 
 import equinox as eqx
+
+def dict_to_namedtuple(d: dict, name: str = 'NamedTuple'):
+    return namedtuple(name, d.keys())(*[dict_to_namedtuple(d[k], k) if isinstance(d[k], dict) else d[k] for k in d])
 
 def standardize(a,mu,std):
   assert jnp.array(mu).ndim == 0 and jnp.array(std).ndim == 0
