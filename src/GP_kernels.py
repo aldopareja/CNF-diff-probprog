@@ -401,8 +401,8 @@ class GPInference(eqx.Module):
   
   @eqx.filter_jit
   def sample_continuous(self, emb, *, key, name):
-    ks = split(key, 2)
-    z = self.continuous_flow_dist.rsample(key=ks[0], cond_vars=emb)
+    key, sk = split(key, 2)
+    z = self.continuous_flow_dist.rsample(key=sk, cond_vars=emb)
     
     mu, sigma = self.normalizer_mlp(emb).split(2, axis=-1)
     sigma = jax.nn.softplus(sigma)
@@ -413,7 +413,7 @@ class GPInference(eqx.Module):
     
     mu_and_std = getattr(self.means_and_stds, name)
     bijector_last = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
-                            tfb.Scale(scale=mu_and_std.std)])
+                               tfb.Scale(scale=mu_and_std.std)])
     
     z = bijector_last.forward(z).squeeze()
     
