@@ -171,7 +171,6 @@ class GPInferenceCfg:
   
 
 class GPInference(eqx.Module):
-  normalizer_mlp: eqx.nn.MLP
   input_encoder: Encoder
   continuous_flow_dist: RealNVP_Flow
   discrete_mlp_dist: eqx.nn.MLP
@@ -204,14 +203,6 @@ class GPInference(eqx.Module):
       key = ks[1]
     )
     
-    self.normalizer_mlp = eqx.nn.MLP(
-      in_size = c.d_model,
-      out_size = 2,
-      width_size= c.discrete_mlp_width,
-      depth= c.discrete_mlp_depth,
-      key = ks[4]
-    )
-    
     self.continuous_flow_dist = RealNVP_Flow(
       num_blocks=c.continuous_flow_blocks,
       num_layers_per_block=c.continuous_flow_num_layers_per_block,
@@ -233,6 +224,20 @@ class GPInference(eqx.Module):
     self.means_and_stds = c.means_and_stds
     
   def log_p(self, t, key):
+    key, sk = split(key, 2)
+    embs, is_discrete, outputs, output_log_det_jacobian = self.process_order_and_get_transformer_embs(t, sk)
+    
+    all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
+    return all_log_p.sum()
+  
+  def eval_log_p(self, t, key):
+    key, sk = split(key, 2)
+    embs, is_discrete, outputs, output_log_det_jacobian = self.process_order_and_get_transformer_embs(t, sk)
+    
+    eval_log_p = vmap(self.get_causal_eval_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
+    return eval_log_p.sum()
+  
+  def process_order_and_get_transformer_embs(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
     
     enc_input = []
@@ -283,35 +288,7 @@ class GPInference(eqx.Module):
     
     embs = self.get_causal_embs(enc_input, mask, sk)
     
-    mu, sigma = vmap(self.normalizer_mlp)(embs).split(2, axis=-1)
-    sigma = jax.nn.softplus(sigma)
-    
-    normalizer_log_p = vmap(self.get_normalizer_log_p)(mu, sigma, outputs, is_discrete)
-    
-    outputs, output_log_det_jacobian = vmap(self.normalize_with_bijector)(outputs, output_log_det_jacobian, mu, sigma, is_discrete)
-    
-    all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
-    return (all_log_p + normalizer_log_p).sum()
-  
-  def get_normalizer_log_p(self, mu_i, sigma_i, output_i, is_discrete_i):
-    assert mu_i.shape == sigma_i.shape == output_i.shape == (1,)
-    bijector = tfb.Chain([tfb.Shift(shift=mu_i),
-                          tfb.Scale(scale=sigma_i)])
-    log_p = jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,)), lambda: bijector.inverse_log_det_jacobian(output_i)).squeeze()
-    output_i = jax.lax.cond(is_discrete_i, lambda: output_i, lambda: bijector.inverse(output_i))
-    log_p += jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,)), 
-                          lambda: tfp.distributions.Normal(loc=0.0, scale=1.0).log_prob(output_i)).squeeze()
-    return  log_p
-  
-  def normalize_with_bijector(self, output_i, output_log_det_jacobian_i, mu_i, sigma_i, is_discrete_i):
-    mu_, sigma_ = map(jax.lax.stop_gradient, (mu_i, sigma_i))
-    stoped_bijector = tfb.Chain([tfb.Shift(shift=mu_),
-                          tfb.Scale(scale=sigma_)])
-    output_log_det_jacobian_i += jax.lax.cond(is_discrete_i, lambda: jnp.zeros_like(output_i), 
-                                              lambda: stoped_bijector.inverse_log_det_jacobian(output_i)).squeeze()
-    output_i = jax.lax.cond(is_discrete_i, lambda: output_i, lambda: stoped_bijector.inverse(output_i))
-    
-    return output_i, output_log_det_jacobian_i
+    return embs, is_discrete, outputs, output_log_det_jacobian
   
   @staticmethod
   def get_causal_mask(mask, i):
@@ -330,6 +307,17 @@ class GPInference(eqx.Module):
     return log_p
   
   @eqx.filter_jit
+  def get_causal_eval_log_p(self, emb, is_discrete_i, output_i, inverse_log_det_jac_i, key):
+    log_p = jax.lax.cond(
+      is_discrete_i,
+      #round to avoid floating point errors and cast to int for indexing
+      lambda: self.discrete_log_prob(emb, jnp.int32(jnp.round(output_i[0]))),
+      lambda: self.continuous_eval_log_prob(emb, jnp.float32(output_i), key, init_logp=inverse_log_det_jac_i),
+    )
+    
+    return log_p
+  
+  @eqx.filter_jit
   def get_causal_embs(self, enc_input, mask, key):
     ks = split(key, enc_input.shape[0])
     masks = vmap(self.get_causal_mask, in_axes=(None,0))(mask, jnp.arange(self.num_observations,enc_input.shape[0]))
@@ -338,7 +326,6 @@ class GPInference(eqx.Module):
     embs = vmap(get_emb)(enc_input_, masks, ks[self.num_observations:], i=jnp.arange(self.num_observations, enc_input.shape[0]))
     return embs
   
-      
   def discrete_log_prob(self, emb, value):
     assert len(emb.shape) == 1
     assert value.shape == ()
@@ -346,6 +333,9 @@ class GPInference(eqx.Module):
     assert logits.ndim == 1
     log_p = logits[value] - jax.nn.logsumexp(logits)
     return log_p
+  
+  def continuous_eval_log_prob(self, emb, value, key, init_logp=0.0):
+    return self.continuous_flow_dist.eval_log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
 
   def continuous_log_prob(self, emb, value, key, init_logp=0.0):
     return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
@@ -403,13 +393,6 @@ class GPInference(eqx.Module):
   def sample_continuous(self, emb, *, key, name):
     key, sk = split(key, 2)
     z = self.continuous_flow_dist.rsample(key=sk, cond_vars=emb)
-    
-    mu, sigma = self.normalizer_mlp(emb).split(2, axis=-1)
-    sigma = jax.nn.softplus(sigma)
-    normalizing_bijector = tfb.Chain([tfb.Shift(shift=mu),
-                            tfb.Scale(scale=sigma)])
-    
-    z = normalizing_bijector.forward(z)
     
     mu_and_std = getattr(self.means_and_stds, name)
     bijector_last = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
