@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from time import time
 from jax.random import PRNGKey, split
+from jax import vmap
 
 from tensorflow_probability.substrates import jax as tfp
 tfb = tfp.bijectors
@@ -22,6 +23,7 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 if __name__ == "__main__":
   traces = load_traces("experiments/bayesian_reg/data/train_1MM.pkl")
+  # traces = load_traces("experiments/bayesian_reg/traces.pkl")
   eval_traces = load_traces("experiments/bayesian_reg/data/test_1MM.pkl")
   eval_traces_batch = sample_random_batch(eval_traces, len(eval_traces))
   
@@ -44,9 +46,13 @@ if __name__ == "__main__":
   )
   inference = gpk.GPInference(key=PRNGKey(0),c=c)
   
-  inference = eqx.tree_deserialise_leaves("tmp/100k_blr_0005_2.eqx", inference)
+  # inference = eqx.tree_deserialise_leaves("tmp/1MM_blr_00005_eval_last_2_norm.eqx", inference)
   
-  inference.log_p(traces[1], PRNGKey(0))
+  ########### DEBUG ###############
+  
+  # normal = vmap(inference.log_p)(eval_traces_batch, split(PRNGKey(0),1000))
+  # eval = eval_batch(inference, eval_traces_batch, PRNGKey(0))
+  # from IPython import embed; embed()
   
   num_steps = 10000
   optim = optax.chain(
@@ -71,7 +77,7 @@ if __name__ == "__main__":
   out_path = Path("tmp/")
   best_eval = float("inf")
   os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps), desc="100k_blr_0005_eval"):
+  for i in tqdm(range(num_steps), desc="1MM_blr_00005_last_1_norm_mlp_no_aug_div1000"):
       start = time()
       batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -80,14 +86,16 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"100k_blr_0005_eval.eqx"
+        p = out_path / f"1MM_blr_00005_last_1_norm_mlp_no_aug_div1000.eqx"
         eqx.tree_serialise_leaves(p, inference)
 
         key, sk = split(key)
+        start = time()
         eval_log_p = eval_batch(inference, eval_traces_batch, sk)
+        end = time()
         if eval_log_p < best_eval:
-          logger.info(f"new best {eval_log_p}")
+          logger.info(f"new best {eval_log_p}, took {end-start}")
           best_eval = eval_log_p
-          p = out_path / f"100k_blr_0005_eval_best.eqx"
+          p = out_path / f"1MM_blr_00005_last_1_norm_mlp_no_aug_div1000_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   

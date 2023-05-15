@@ -131,11 +131,18 @@ class Normalizer(eqx.Module):
   normalizer_nn: GatedDenseNet
   
   def __init__(self, *, num_latents, num_conds, hidden_size, key):
-    self.normalizer_nn = GatedDenseNet(
-      num_layers=1,
+    # self.normalizer_nn = GatedDenseNet(
+    #   num_layers=1,
+    #   in_size=num_conds,
+    #   out_size=num_latents*2,
+    #   hidden_size=hidden_size,
+    #   key=key,
+    # )
+    self.normalizer_nn = eqx.nn.MLP(
       in_size=num_conds,
       out_size=num_latents*2,
-      hidden_size=hidden_size,
+      width_size=hidden_size,
+      depth=1,
       key=key,
     )
   
@@ -184,7 +191,7 @@ class RealNVP_Flow(eqx.Module):
                                 hidden_size=block_hidden_size,
                                 key=ks[i])
                    for i in range(num_blocks)]
-    self.normalizers = [Normalizer(num_latents=num_latents + num_augments,
+    self.normalizers = [Normalizer(num_latents=num_latents,
                                    num_conds=num_conds,
                                    hidden_size=block_hidden_size,
                                    key=ks[i])
@@ -197,16 +204,38 @@ class RealNVP_Flow(eqx.Module):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
     normalizer_log_p = 0.0
     log_prob = init_logp
+    for normalizer in reversed(self.normalizers[-1:]):
+      normalizer_log_p += normalizer.gaussian_log_p(z, cond_vars)
+      z, inv_log_det_jac_normalizer = normalizer.reverse(z, cond_vars)
+      log_prob += inv_log_det_jac_normalizer
+      
     z_aug = augment_sample(key, z, self.num_augments)
-    for normalizer,block in zip(reversed(self.normalizers),reversed(self.blocks)):
-      normalizer_log_p += normalizer.gaussian_log_p(z_aug, cond_vars)
-      z_aug, inv_log_det_jac_normalizer = normalizer.reverse(z_aug, cond_vars)
+    for block in reversed(self.blocks):
       z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
-      log_prob += inv_log_det_jac + inv_log_det_jac_normalizer
+      log_prob += inv_log_det_jac
       
     log_prob += tfd.Normal(0, 1).log_prob(z_aug).sum() 
     
-    return log_prob + normalizer_log_p/len(self.normalizers)
+    return log_prob + normalizer_log_p/1000.0
+  
+  def eval_log_p(self, z, cond_vars, key, init_logp=0.0):
+    '''
+    compute log_p without the auxiliary normalizer log_p since for evaluation we only
+    care about the log_p of the ground truth data
+    '''
+    log_prob = init_logp
+    for normalizer in reversed(self.normalizers[-1:]):
+      z, inv_log_det_jac_normalizer = normalizer.reverse(z, cond_vars)
+      log_prob += inv_log_det_jac_normalizer
+      
+    z_aug = augment_sample(key, z, self.num_augments)
+    for block in reversed(self.blocks):
+      z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
+      log_prob += inv_log_det_jac
+      
+    log_prob += tfd.Normal(0, 1).log_prob(z_aug).sum() 
+    
+    return log_prob
   
   @eqx.filter_jit
   def rsample(self, key, cond_vars):
@@ -214,8 +243,12 @@ class RealNVP_Flow(eqx.Module):
       seed = key, sample_shape=(self.num_latents + self.num_augments,)
     )
     
-    for block, normalizer in zip(self.blocks,self.normalizers):
+    for block in self.blocks:
       z, _ = block.forward(z, cond_vars)
+    
+    z = z[:self.num_latents]
+    
+    for normalizer in self.normalizers[-1:]:
       z, _ = normalizer.forward(z, cond_vars)
       
-    return z[:self.num_latents]
+    return z
