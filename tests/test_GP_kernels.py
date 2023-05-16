@@ -15,7 +15,10 @@ from numpyro import distributions as dist
 import numpyro as npy
 import equinox as eqx
 import jax
-from src.utils.trace_dataset import load_traces, sample_random_batch, sample_many_traces, serialize_traces
+import src.InferenceModel
+import src.GPInferenceCfg
+from src.utils.common_training_functions import sample_random_batch
+from src.utils.trace_dataset import load_traces, sample_many_traces, serialize_traces
 
 import logging
 
@@ -85,7 +88,7 @@ def test_GP_Inference():
       traces, _ = sample_many_traces(sampler, PRNGKey(132), 10000, True, max_num_variables=10)
       serialize_traces(traces, "tmp/erase.pkl")
   
-  model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,),
+  model = src.InferenceModel.InferenceModel(key=PRNGKey(0), c=src.GPInferenceCfg.GPInferenceCfg(num_input_variables=(1,),
                                                                num_observations=1,
                                                                max_discrete_choices=5,
                                                                d_model=128,
@@ -145,7 +148,7 @@ def test_GP_Inference():
             eqx.tree_serialise_leaves(p, model)
             
 def test_gp_experiment():
-    model = gpk.GPInference(key=PRNGKey(0), c=gpk.GPInferenceCfg(num_input_variables=(1,2),
+    model = src.InferenceModel.InferenceModel(key=PRNGKey(0), c=src.GPInferenceCfg.GPInferenceCfg(num_input_variables=(1,2),
                                                                num_observations=100,
                                                                max_discrete_choices=4,
                                                                d_model=128,

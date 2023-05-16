@@ -11,8 +11,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import equinox as eqx
 
+
 class SceneSampler():
-  def __init__(self, mesh_paths: List[Path], intrinsics: j.Intrinsics = None, renderer: j.Renderer = None, num_objects=1):
+  def __init__(self, *, mesh_paths: List[Path], intrinsics: j.Intrinsics = None, renderer: j.Renderer = None, num_objects=1, obs_depth_noise=0.01):
     if intrinsics is None:
       intrinsics = j.Intrinsics(height=150,
                                 width=150,
@@ -34,6 +35,7 @@ class SceneSampler():
 
     self.num_objects = num_objects
     self.num_types = len(mesh_paths)
+    self.obs_depth_noise = obs_depth_noise
     
   def __call__(self, key):
     key, ks = split(key)
@@ -53,11 +55,13 @@ class SceneSampler():
       poses.append(pose)
     
     poses = jnp.stack(poses)
+    print(poses)
     img = self.renderer.render_multiobject(poses, object_ids)
     depth_img = img[...,2]
+    print(depth_img.shape)
     flattened_patches = self.image_to_flattened_patches(depth_img, 15)
     
-    npy.sample("obs", dist.Normal(loc=flattened_patches), rng_key=key)
+    npy.sample("obs", dist.Normal(loc=flattened_patches, scale=self.obs_depth_noise), rng_key=key)
     
     return img, flattened_patches
   

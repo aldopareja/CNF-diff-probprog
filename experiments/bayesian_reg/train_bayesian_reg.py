@@ -5,15 +5,16 @@ from jax.random import PRNGKey, split
 from jax import vmap
 
 from tensorflow_probability.substrates import jax as tfp
+
+import src.InferenceModel
 tfb = tfp.bijectors
 
 import equinox as eqx
 import optax
 from tqdm import tqdm
 
-from src import GP_kernels as gpk
-from src.utils.common_training_functions import make_step, eval_batch
-from src.utils.trace_dataset import load_traces, sample_random_batch
+from src.utils.common_training_functions import make_step, eval_batch, sample_random_batch
+from src.utils.trace_dataset import load_traces
 from src.utils.setup_logger import setup_logger
 from src.utils.miscellaneous import dict_to_namedtuple
 
@@ -30,7 +31,7 @@ if __name__ == "__main__":
   means_and_stds = load_traces("experiments/bayesian_reg/means_and_stds.pkl")
   means_and_stds = dict_to_namedtuple(means_and_stds)
   
-  c = gpk.GPInferenceCfg(
+  c = src.InferenceModel.InferenceModelCfg(
     d_model = 128,
     dropout_rate = 0.1,
     discrete_mlp_width = 512,
@@ -44,7 +45,7 @@ if __name__ == "__main__":
     num_observations =6,
     means_and_stds=means_and_stds,
   )
-  inference = gpk.GPInference(key=PRNGKey(0),c=c)
+  inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
   
   # inference = eqx.tree_deserialise_leaves("tmp/1MM_blr_00005_eval_last_2_norm.eqx", inference)
   
