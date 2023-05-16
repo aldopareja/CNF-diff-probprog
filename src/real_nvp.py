@@ -131,13 +131,6 @@ class Normalizer(eqx.Module):
   normalizer_nn: GatedDenseNet
   
   def __init__(self, *, num_latents, num_conds, hidden_size, key):
-    # self.normalizer_nn = GatedDenseNet(
-    #   num_layers=1,
-    #   in_size=num_conds,
-    #   out_size=num_latents*2,
-    #   hidden_size=hidden_size,
-    #   key=key,
-    # )
     self.normalizer_nn = eqx.nn.MLP(
       in_size=num_conds,
       out_size=num_latents*2,
@@ -181,33 +174,32 @@ class RealNVP_Flow(eqx.Module):
   blocks: List[RealNVPLayer]
   num_latents: int
   num_augments: int
-  normalizers: List[Normalizer]
+  normalizer: Normalizer
   
   def __init__(self,*,num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds,key):
-    ks = split(key, num_blocks)
+    ks = split(key, num_blocks + 1)
     self.blocks = [RealNVPLayer(num_layers=num_layers_per_block,
                                 num_variables=num_latents+num_augments,
                                 num_conds=num_conds,
                                 hidden_size=block_hidden_size,
                                 key=ks[i])
                    for i in range(num_blocks)]
-    self.normalizers = [Normalizer(num_latents=num_latents,
+    self.normalizer = Normalizer(num_latents=num_latents,
                                    num_conds=num_conds,
-                                   hidden_size=block_hidden_size,
-                                   key=ks[i])
-                        for i in range(num_blocks)]
+                                   hidden_size=512,
+                                   key=ks[-1])
+                   
     self.num_latents = num_latents
     self.num_augments = num_augments
     
   # @eqx.filter_jit
   def log_p(self, z, cond_vars, key, init_logp=0.0):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
-    normalizer_log_p = 0.0
-    log_prob = init_logp
-    for normalizer in reversed(self.normalizers[-1:]):
-      normalizer_log_p += normalizer.gaussian_log_p(z, cond_vars)
-      z, inv_log_det_jac_normalizer = normalizer.reverse(z, cond_vars)
-      log_prob += inv_log_det_jac_normalizer
+    normalizer_log_p = self.normalizer.gaussian_log_p(z, cond_vars)
+    
+    z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
+    
+    log_prob = init_logp + inv_log_det_jac_normalizer
       
     z_aug = augment_sample(key, z, self.num_augments)
     for block in reversed(self.blocks):
