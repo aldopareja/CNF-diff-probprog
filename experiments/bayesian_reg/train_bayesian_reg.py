@@ -60,7 +60,7 @@ if __name__ == "__main__":
       optax.adamw(
           learning_rate=optax.cosine_onecycle_schedule(
               num_steps,
-              0.00005,
+              0.0003,
               0.01,
               1e1,
               1e2,
