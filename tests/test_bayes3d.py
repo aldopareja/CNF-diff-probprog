@@ -7,8 +7,15 @@ from numpyro.handlers import trace
 model = SceneSampler(mesh_paths=[
                                 # Path("sample_objs/cube.obj"),
                                 #  Path("sample_objs/sphere.obj"),
-                                 Path("sample_objs/bunny.obj"),
-                                 ],)
+                                #  Path("sample_objs/bunny.obj"),
+                                 Path("ycb_video_models/models/025_mug/textured_simple.obj"),
+                                 ],
+                     num_objects=1,
+                     max_pose_xy_noise=0.3,
+                     obs_depth_noise=0.5
+                     )
+
+model.debug_sampler()
 
 
 img, flattened_patches = model(PRNGKey(67589))
