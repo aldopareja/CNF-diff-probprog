@@ -50,7 +50,7 @@ if __name__ == "__main__":
   )
   inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
   
-  inference = eqx.tree_deserialise_leaves("tmp/500k_bayes3d.eqx", inference)
+  # inference = eqx.tree_deserialise_leaves("tmp/500k_bayes3d.eqx", inference)
 
   num_steps = 100000
   optim = optax.chain(
@@ -81,7 +81,7 @@ if __name__ == "__main__":
   os.makedirs(out_path, exist_ok=True)
   
   best_eval = np.inf
-  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="500k_bayes3d1",total= num_steps):
+  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="500k_bayes3d",total= num_steps):
       start = time()
       # batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -90,16 +90,17 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"500k_bayes3d1.eqx"
+        p = out_path / f"500k_bayes3d.eqx"
         eqx.tree_serialise_leaves(p, inference)
         key, sk = split(key)
         start = time()
         eval_log_p = evaluate_per_batch(inference, test_traces, eval_batch_size, sk)
+        logger.info(f"eval {eval_log_p}")
         end = time()
         if eval_log_p < best_eval:
           logger.info(f"new best {eval_log_p}, took {end-start}")
           best_eval = eval_log_p
-          p = out_path / f"500k_bayes3d1_best.eqx"
+          p = out_path / f"500k_bayes3d_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   
   

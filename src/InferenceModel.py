@@ -262,9 +262,12 @@ class InferenceModel(eqx.Module):
     bijector_last = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
                                tfb.Scale(scale=mu_and_std.std)])
 
-    z = bijector_last.forward(z).squeeze()
+    z_out = bijector_last.forward(z).squeeze()
+    
+    init_log_p = bijector_last.inverse_log_det_jacobian(z_out)
+    log_p = self.continuous_eval_log_prob(emb, z, key, init_logp=init_log_p)    
 
-    return z
+    return z_out, log_p
 
 
   def rsample(self, obs, gen_model_sampler,key):
@@ -274,6 +277,7 @@ class InferenceModel(eqx.Module):
 
     exec_trace = trace(gen_model_sampler).get_trace(sk2)
     sampled_latents = {}
+    log_p = 0.0
     while True:
       k,v = self.get_next_latent(exec_trace, sampled_latents)
       if k is None or k=='obs':
@@ -284,13 +288,19 @@ class InferenceModel(eqx.Module):
       if is_discrete:
         logits = self.discrete_mlp_dist(emb)
         sample = tfd.Categorical(logits=logits).sample(seed=sk1)
+        log_p_ = logits[sample] - jax.nn.logsumexp(logits)
       else:
-        sample = self.sample_continuous(emb, key=sk1, name=k)
+        sample, log_p_ = self.sample_continuous(emb, key=sk1, name=k)
+      
+      log_p += log_p_
 
       emb, enc_input = self.add_new_variable_to_sequence(sample, enc_input=enc_input, key=sk2, name=k)
       sampled_latents[k] = sample
 
       sub_model = substitute(gen_model_sampler, sampled_latents)
-      exec_trace = trace(sub_model).get_trace(sk3)
+      try:
+        exec_trace = trace(sub_model).get_trace(sk3)
+      except:
+        from IPython import embed; embed()
 
-    return sampled_latents, exec_trace
+    return sampled_latents, exec_trace, log_p

@@ -46,7 +46,7 @@ class SceneSampler():
     self.max_pose_xy_noise = max_pose_xy_noise
     
     
-  def __call__(self, key):
+  def __call__(self, key, noise=True):
     key, ks = split(key)
     num_objects = npy.sample("num_objects", dist.Categorical(probs=jnp.arange(self.num_objects,dtype=jnp.float32)/self.num_objects), 
                              rng_key=ks)
@@ -58,8 +58,8 @@ class SceneSampler():
       object_ids.append(type_of_object)
       
       pose = jnp.eye(4)
-      pose = pose.at[:3,3].set(self.random_pose(ks[1], prefix=f"pose_{i}_"))
-      pose = pose.at[:3,:3].set(self.random_rotation(ks[2], prefix=f"rot_{i}_"))
+      pose = pose.at[:3,3].set(self.random_pose(ks[1], prefix=f"pose_{i}_", noise=noise))
+      pose = pose.at[:3,:3].set(self.random_rotation(ks[2], prefix=f"rot_{i}_", noise=noise))
       poses.append(pose)
     
     poses = jnp.stack(poses)
@@ -174,20 +174,21 @@ class SceneSampler():
     z2 = jnp.sqrt(1 - w2**2) * jnp.sin(2 * np.pi * u5)
     return jnp.stack([w2, x2, y2, z2])
       
-  def random_rotation(self, key, prefix=""):
+  def random_rotation(self, key, prefix="", noise=True):
     # sample a random rotation matrix from the uniform distribution over SO(3) Marsaglia method 
     ks = split(key, 4)
     u1, u2, u3 = [npy.sample(f'{prefix}u{i}', dist.Uniform(0,1),rng_key=ks[i]) for i in range(3)]
 
     rot = R.from_quat(make_quaternion(u1, u2, u3))
-    noise = R.from_quat(self.make_noise_quaternion(ks[3]))
+    noise_q = R.from_quat(self.make_noise_quaternion(ks[3]))
 
     # Apply the small rotation to the original quaternion
-    new_rot_quat = rot * noise
+    if noise:
+      rot *= noise_q
     
-    return jnp.array(new_rot_quat.as_matrix(), dtype=jnp.float32)
+    return jnp.array(rot.as_matrix(), dtype=jnp.float32)
   
-  def random_pose(self, key, prefix=""):
+  def random_pose(self, key, prefix="", noise=True):
     ks = split(key, 6)
     # sample some depth from the uniform distribution over [2, 5.5], this samples uniformly over the viewable cone since closer planes are smaller
     sqrt_depth = npy.sample(f'{prefix}sqrt_depth', dist.Uniform(jnp.sqrt(2.0), jnp.sqrt(5.5)),rng_key=ks[0])
@@ -195,7 +196,7 @@ class SceneSampler():
     depth = sqrt_depth ** 2
     
     # add untraced noise to the depth
-    depth += dist.Normal(0, self.pose_depth_noise).sample(ks[1])
+    depth += dist.Normal(0, self.pose_depth_noise).sample(ks[1]) if noise else 0.0
 
     # Compute the full width and height of the image plane at this depth
     full_width = depth * self.intrinsics.width / self.intrinsics.fx
@@ -208,8 +209,8 @@ class SceneSampler():
     y = npy.sample(f'{prefix}y', dist.Uniform(-full_height, -0.0),rng_key=ks[3])
     
     # Add untraced noise to the x and y coordinates proportional to the depth
-    x += dist.Normal(0, self.max_pose_xy_noise/self.intrinsics.far * depth).sample(ks[4])
-    y += dist.Normal(0, self.max_pose_xy_noise/self.intrinsics.far * depth).sample(ks[5])
+    x += dist.Normal(0, self.max_pose_xy_noise/self.intrinsics.far * depth).sample(ks[4]) if noise else 0.0
+    y += dist.Normal(0, self.max_pose_xy_noise/self.intrinsics.far * depth).sample(ks[5]) if noise else 0.0
     
     # The pose is the 3D point (x, y, depth)
     pose = jnp.array([x, y, depth])
