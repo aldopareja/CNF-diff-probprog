@@ -20,8 +20,8 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 
 if __name__ == "__main__":
-  traces = load_traces("tmp/500k_bayes3d.pkl")
-  traces, test_traces = traces[:-1000], traces[-1000:]
+  traces = load_traces("tmp/1M_bayes3d.pkl")
+  traces, test_traces = traces[:-2000], traces[-2000:]
   
   ######DEBUG########
   # traces = load_traces("tmp/1k_bayes3d.pkl")
@@ -29,13 +29,11 @@ if __name__ == "__main__":
   ########
   
   
-  means_and_stds = load_traces("tmp/500k_bayes3d_mean_and_std.pkl")
-  means_and_stds = dict_to_namedtuple(means_and_stds)
-  
-  
+  metadata = load_traces("tmp/1M_bayes3d_metadata.pkl")
+  metadata = dict_to_namedtuple(metadata)
   
   c = src.InferenceModel.InferenceModelCfg(
-    means_and_stds = means_and_stds,
+    metadata=metadata,
     d_model = 128,
     dropout_rate = 0.1,
     discrete_mlp_width = 512,
@@ -50,6 +48,15 @@ if __name__ == "__main__":
   )
   inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
   
+  #########Debug ##########
+  # debug_sampler = BatchSampler(traces, 1000)
+  # batch = next(debug_sampler)
+  # obs = batch['trace']['obs']['value']
+  # bound_and_standardize = lambda val: inference.bound_and_standardize('obs', val)
+  # bound_and_standardize(batch['trace']['obs']['value'][0])
+  # from jax import vmap
+  # value, inv_log_det_jacobian, is_discrete = vmap(bound_and_standardize)(obs)
+  
   # inference = eqx.tree_deserialise_leaves("tmp/500k_bayes3d.eqx", inference)
 
   num_steps = 100000
@@ -58,7 +65,7 @@ if __name__ == "__main__":
       optax.adamw(
           learning_rate=optax.cosine_onecycle_schedule(
               num_steps,
-              0.0001,
+              0.0005,
               0.01,
               1e1,
               1e2,
@@ -67,7 +74,7 @@ if __name__ == "__main__":
       ),
   )
   
-  batch_size = 64
+  batch_size = 128
   eval_batch_size = 100
   train_sampler = BatchSampler(traces, batch_size)
   
@@ -80,27 +87,28 @@ if __name__ == "__main__":
   out_path = Path("tmp/")
   os.makedirs(out_path, exist_ok=True)
   
+  init_time = time()
   best_eval = np.inf
-  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="500k_bayes3d",total= num_steps):
+  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="1M_bayes3d_b128",total= num_steps):
       start = time()
       # batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
       end = time()
       if i % 100 == 0 or i == 1:
-        logger.info(f"{l.item()} t {end-start}")
+        logger.info(f"{l.item():.4f} t {end-start:.4f}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"500k_bayes3d.eqx"
+        p = out_path / f"1M_bayes3d_b128.eqx"
         eqx.tree_serialise_leaves(p, inference)
         key, sk = split(key)
         start = time()
         eval_log_p = evaluate_per_batch(inference, test_traces, eval_batch_size, sk)
-        logger.info(f"eval {eval_log_p}")
+        logger.info(f"{str(i).zfill(6)} eval {eval_log_p:.4f}")
         end = time()
         if eval_log_p < best_eval:
-          logger.info(f"new best {eval_log_p}, took {end-start}")
+          logger.info(f"{str(i).zfill(6)} new best {eval_log_p:.4f}, took {end-start:.2f}, after {(time()-init_time)/60:.2f} min")
           best_eval = eval_log_p
-          p = out_path / f"500k_bayes3d_best.eqx"
+          p = out_path / f"1M_bayes3d_b128_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   
   

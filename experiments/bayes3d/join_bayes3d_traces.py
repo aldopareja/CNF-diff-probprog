@@ -15,7 +15,7 @@ from itertools import chain
 def load_trace(p):
   return pickle.load(open(p, "rb"))
   
-num_traces = 1000000
+num_traces = 10000
 traces = []
 raw_traces_folder = "tmp/bayes3d_traces_mug"
 key = jax.random.PRNGKey(56385)
@@ -42,9 +42,10 @@ else:
     traces+=tr
     if len(traces) >= num_traces:
       break
-from IPython import embed; embed(using=False)
-traces, default_trace, mean_and_std = sample_many_traces(None, None, num_traces, True, max_num_variables=60, traces=traces, use_dill=False, max_traces_for_default_trace=10000)
+
+traces, default_trace, metadata = sample_many_traces(None, None, num_traces, parallel, max_num_variables=60, traces=traces, use_dill=False, max_traces_for_default_trace=10000)
+# from IPython import embed; embed(using=False)
 #pickle dataset
-serialize_traces(traces, "tmp/500k_bayes3d.pkl")
-serialize_traces(mean_and_std, "tmp/500k_bayes3d_mean_and_std.pkl")
+# serialize_traces(traces, "tmp/1M_bayes3d.pkl")
+serialize_traces(metadata, "tmp/1M_bayes3d_metadata.pkl")
 from IPython import embed; embed(using=False)

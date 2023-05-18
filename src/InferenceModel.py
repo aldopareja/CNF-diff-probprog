@@ -1,22 +1,24 @@
-from dataclasses import dataclass
-from src.GP_kernels import tfb, tfd
-from src.encoder import Encoder, EncoderCfg
-from src.real_nvp import RealNVP_Flow
-
-
 import equinox as eqx
 import jax
 from jax import lax, numpy as jnp, vmap
 from jax.random import PRNGKey, split
 from numpyro.handlers import substitute, trace
 
-
 from typing import Dict, NamedTuple, Tuple
+from tensorflow_probability.substrates import jax as tfp
+
+from src.common_bijectors import make_bounding_and_standardization_bijector
+tfb = tfp.bijectors
+tfd = tfp.distributions
+
+from dataclasses import dataclass
+from src.encoder import Encoder, EncoderCfg
+from src.real_nvp import RealNVP_Flow
 
 
 @dataclass
 class InferenceModelCfg:
-  means_and_stds: NamedTuple = None
+  metadata: NamedTuple = None
   d_model:int = 256
   dropout_rate:float = 0.1
   discrete_mlp_width:int = 512
@@ -37,7 +39,7 @@ class InferenceModel(eqx.Module):
   obs_to_embed_dict: Dict[str,eqx.nn.MLP]
   num_input_variables: Tuple[int]
   num_observations: int
-  means_and_stds: eqx.static_field()
+  metadata: eqx.static_field()
 
   def __init__(
     self,
@@ -82,7 +84,7 @@ class InferenceModel(eqx.Module):
 
     self.num_input_variables = c.num_input_variables
     self.num_observations = c.num_observations
-    self.means_and_stds = c.means_and_stds
+    self.metadata = c.metadata
 
   def log_p(self, t, key):
     key, sk = split(key, 2)
@@ -100,6 +102,23 @@ class InferenceModel(eqx.Module):
 
     eval_log_p = vmap(self.get_causal_eval_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
     return eval_log_p.sum()
+  
+  def bound_and_standardize(self, var_name, value):
+    '''
+    return the transformed value and the inverse log det jacobian of the original value if it is continuous
+    otherwise returns the original value and 0
+    '''
+    metadata = getattr(self.metadata, var_name)
+    is_discrete = jax.lax.cond(value.dtype == jnp.int32, lambda: True, lambda: False)
+    value = jnp.float32(value)
+    
+    bijector = make_bounding_and_standardization_bijector(metadata)
+    if var_name != 'obs':
+      inv_log_det_jacobian = jax.lax.cond(is_discrete, lambda: jnp.zeros((1,1)), lambda: bijector.inverse_log_det_jacobian(value))
+    else:
+      inv_log_det_jacobian = jnp.zeros((1,1))
+    value = jax.lax.cond(is_discrete, lambda: value, lambda: bijector.inverse(value))
+    return value, inv_log_det_jacobian, is_discrete
 
   def process_order_and_get_transformer_embs(self, t, key):
     mask, indices, variables = t['attention_mask'], t['indices'], t['trace']
@@ -112,31 +131,22 @@ class InferenceModel(eqx.Module):
     for k,v in variables.items():
       v = v['value']
       assert len(v.shape) == 2 and v.shape[1] in self.num_input_variables
-      float_v = jnp.float32(v)
-      mu_and_std = getattr(self.means_and_stds, k)
-      bijector = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
-                              tfb.Scale(scale=mu_and_std.std)])
-
-      is_discrete_i = jax.lax.cond(v.dtype == jnp.int32, lambda: True, lambda: False)
-      input= jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
-      input = vmap(self.obs_to_embed_dict[v.shape[1]])(input)
+      float_v, log_det_i, is_discrete_i = self.bound_and_standardize(k, v)
+      
+      input = vmap(self.obs_to_embed_dict[v.shape[1]])(float_v)
       enc_input.append(input)
 
       if k != 'obs':
         assert v.shape[1] == 1, 'only single dimensional latents are supported, consider flattening multivariate samples'
         is_discrete.append(is_discrete_i)
-
-        log_det_i = jax.lax.cond(is_discrete_i, lambda: jnp.zeros((1,1)), lambda: bijector.inverse_log_det_jacobian(float_v))
         output_log_det_jacobian.append(log_det_i)
-        #use a bijector to standardize the output for the flow
-        float_v = jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
         outputs.append(float_v)
       else:
         outputs.append(jnp.zeros((self.num_observations, 1)))
         output_log_det_jacobian.append(jnp.zeros((self.num_observations, 1)))
         is_discrete+=[False]*self.num_observations
 
-    #shift inputs and outputs by one so output_i is conditioned on input_i
+    #order the data according to the order of the trace
     enc_input = jnp.concatenate(enc_input, axis=0)[indices]
     enc_input += self.positional_encoding(*enc_input.shape)
 
@@ -144,12 +154,12 @@ class InferenceModel(eqx.Module):
     output_log_det_jacobian = jnp.concatenate(output_log_det_jacobian, axis=0)[indices]
     is_discrete = jnp.stack(is_discrete)[indices]
 
+    #remove the observation part of the output since it is not used for training.
     outputs = outputs[self.num_observations:]
     is_discrete = is_discrete[self.num_observations:]
     output_log_det_jacobian = output_log_det_jacobian[self.num_observations:].reshape(-1)
 
     key, sk = split(key)
-
     embs = self.get_causal_embs(enc_input, mask, sk)
 
     return embs, is_discrete, outputs, output_log_det_jacobian
@@ -237,17 +247,12 @@ class InferenceModel(eqx.Module):
     if new_variable.shape == ():
       new_variable = new_variable[None][None]
 
-    float_v = jnp.float32(new_variable)
-    mu_and_std = getattr(self.means_and_stds, name)
-    bijector = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
-                            tfb.Scale(scale=mu_and_std.std)])
-
-    is_discrete_i = jax.lax.cond(new_variable.dtype == jnp.int32, lambda: True, lambda: False)
-    input= jax.lax.cond(is_discrete_i, lambda: float_v, lambda: bijector.inverse(float_v))
-    input = vmap(self.obs_to_embed_dict[new_variable.shape[1]])(input)
+    float_v, _, is_discrete_i = self.bound_and_standardize(name, new_variable)
+    input = vmap(self.obs_to_embed_dict[new_variable.shape[1]])(float_v)
 
     if enc_input is None:
       enc_input = jnp.zeros((0, input.shape[1]))
+      
     enc_input = jnp.concatenate([enc_input, input])
     enc_input_ = enc_input + self.positional_encoding(*enc_input.shape)
     emb = self.input_encoder(enc_input_, mask=jnp.ones(len(enc_input_),dtype=jnp.bool_),key=key)[-1]
@@ -257,16 +262,14 @@ class InferenceModel(eqx.Module):
   def sample_continuous(self, emb, *, key, name):
     key, sk = split(key, 2)
     z = self.continuous_flow_dist.rsample(key=sk, cond_vars=emb)
-
-    mu_and_std = getattr(self.means_and_stds, name)
-    bijector_last = tfb.Chain([tfb.Shift(shift=mu_and_std.mean),
-                               tfb.Scale(scale=mu_and_std.std)])
-
-    z_out = bijector_last.forward(z).squeeze()
     
-    init_log_p = bijector_last.inverse_log_det_jacobian(z_out)
-    log_p = self.continuous_eval_log_prob(emb, z, key, init_logp=init_log_p)    
+    metadata = getattr(self.metadata, name)
+    bijector = make_bounding_and_standardization_bijector(metadata)
+    
+    z_out = bijector.forward(z).squeeze()
+    init_log_p = bijector.inverse_log_det_jacobian(z_out)
 
+    log_p = self.continuous_eval_log_prob(emb, z, key, init_logp=init_log_p)    
     return z_out, log_p
 
 
@@ -298,9 +301,6 @@ class InferenceModel(eqx.Module):
       sampled_latents[k] = sample
 
       sub_model = substitute(gen_model_sampler, sampled_latents)
-      try:
-        exec_trace = trace(sub_model).get_trace(sk3)
-      except:
-        from IPython import embed; embed()
+      exec_trace = trace(sub_model).get_trace(sk3)
 
     return sampled_latents, exec_trace, log_p

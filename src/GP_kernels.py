@@ -8,11 +8,6 @@ import equinox as eqx
 from jax import vmap
 from jax.random import PRNGKey, split
 
-#TODO: I should use numpyro
-from tensorflow_probability.substrates import jax as tfp
-tfd = tfp.distributions
-tfb = tfp.bijectors
-
 
 class RationalQuadraticKernel(eqx.Module):
     lenght_scale: float

@@ -42,7 +42,7 @@ if __name__ == "__main__":
   num_processes = int(sys.argv[3])
   num_batches = int(sys.argv[4])
   outpath = sys.argv[5]
-  parallel = True
+  parallel = False
   
   os.makedirs(outpath, exist_ok=True)
   
@@ -51,11 +51,15 @@ if __name__ == "__main__":
     mp.set_start_method('spawn')
     with mp.Pool(num_processes) as p:
       list(p.imap_unordered(generate_traces, tqdm(zip(split(key, num_batches), 
-                                      repeat(num_samples_per_batch), 
-                                      repeat(outpath), 
-                                      range(num_batches), 
-                                      repeat(key_int)),
+                                                      repeat(num_samples_per_batch), 
+                                                      repeat(outpath), 
+                                                      range(num_batches), 
+                                                      repeat(key_int)),
                                   desc="Generating Traces",
                                   total=num_batches)))
   else:
-      [generate_traces(a) for a in zip(split(key, num_batches), repeat(num_samples_per_batch), repeat(outpath), range(num_batches), repeat(key_int))]
+      [generate_traces(a) for a in zip(split(key, num_batches), 
+                                       repeat(num_samples_per_batch), 
+                                       repeat(outpath), 
+                                       range(num_batches), 
+                                       repeat(key_int))]

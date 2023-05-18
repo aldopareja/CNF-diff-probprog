@@ -236,7 +236,6 @@ def plot_heatmap_on_sphere(data, num_bins=50):
     
     # Create a 2D histogram in theta-phi space
     hist, theta_edges, phi_edges = np.histogram2d(theta, phi, bins=num_bins)
-    from IPython import embed; embed(using=False)
     # Convert the bin edges to bin centers
     theta_centers = (theta_edges[:-1] + theta_edges[1:]) / 2
     phi_centers = (phi_edges[:-1] + phi_edges[1:]) / 2

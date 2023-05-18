@@ -12,6 +12,8 @@ from pathlib import Path
 import pickle
 import numpy as np
 
+from src.common_bijectors import make_bounding_bijector
+
 def get_trace(args):
   m,k = args
   exec_trace = trace(m).get_trace(k)
@@ -52,7 +54,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
     traces = list(filter(lambda t: len(t) <= max_num_variables, traces))
     
     if default_trace is None:
-      default_trace, mean_and_std = build_default_trace(traces, max_traces_for_default_trace)
+      default_trace, metadata = build_default_trace(traces, max_traces_for_default_trace)
       
     if parallel:
       with mp.Pool(mp.cpu_count()//4) as p:
@@ -61,7 +63,7 @@ def sample_many_traces(m, key:PRNGKey, num_traces, parallel, max_num_variables=1
                                       chunksize=100))
     else:
       traces = list(map(get_trace_order_and_values, zip(traces, repeat(default_trace))))
-    return traces, default_trace, mean_and_std
+    return traces, default_trace, metadata
 
 def get_trace_order_and_values(args):
   ''' process a trace to make it compatible with the default trace.
@@ -113,31 +115,51 @@ def get_necessary_variable_info(v):
 
 def build_default_trace(traces, max_traces_to_use):
   default_trace = OrderedDict()
-  mean_and_std = defaultdict(list)
+  metadata = defaultdict(lambda: dict(values=[], bounds=dict(upper_bound=-np.inf, lower_bound=np.inf)))
+  
+  #accumulate values and bounds
   for i,t in tqdm(enumerate(traces)):
     for k,v in t.items():
       if k not in default_trace:
         default_trace[k] = get_necessary_variable_info(v)
       #reshape as the default trace
-      mean_and_std[k].append(v['value'].reshape(*default_trace[k]['value'].shape))
+      metadata[k]['values'].append(v['value'].reshape(*default_trace[k]['value'].shape))
+      fn = v['fn']
+      if hasattr(fn.support, 'lower_bound'):
+        metadata[k]['bounds']['lower_bound'] = min(metadata[k]['bounds']['lower_bound'], fn.support.lower_bound)
+      if hasattr(fn.support, 'upper_bound'):
+        metadata[k]['bounds']['upper_bound'] = max(metadata[k]['bounds']['upper_bound'], fn.support.upper_bound)
+      
     if i > max_traces_to_use:
       break
   
-  for k,v in mean_and_std.items():
-    v = np.concatenate(v)
-    if default_trace[k]['value'].dtype in (np.float32, np.float64):
-      mean_and_std[k] = {'mean': np.mean(v, axis=0, keepdims=True), 'std': np.std(v, axis=0, keepdims=True)}
-    else:
-      #remove the key if it is not a float
-      mean_and_std[k] = {'mean': np.zeros((1,1), np.float32), 'std': np.ones((1,1), np.float32)}
+  #postprocess values and compute mean and std
+  #mean and std are taken after bounding, since that's what's the model sees
+  for k,v in metadata.items():
+    bounds = v['bounds']
+    v = np.concatenate(v['values'], axis=0)
+    #remove infinite bounds
+    bounds = {k_:np.float32(v_) if not np.isinf(v_) else None
+              for k_,v_ in bounds.items() }
         
+    if default_trace[k]['value'].dtype in (np.float32, np.float64):
+      v = make_bounding_bijector(**bounds).inverse(v)
+      metadata[k] = {'mean': np.mean(v, axis=0, keepdims=True), 
+                     'std': np.std(v, axis=0, keepdims=True),
+                     **bounds}
+    else:
+      metadata[k] = {'mean': np.zeros((1,1), np.float32), 'std': np.ones((1,1), np.float32), 
+                     **{'lower_bound': None, 'upper_bound': None}}
+  
+  #sort the default trace and make default indices
   default_trace = OrderedDict(sorted(default_trace.items(), key=lambda t: t[0]))
   
   current_idx = 0
   for k,v in default_trace.items():
     v['indices'] = np.arange(current_idx, current_idx + v['value'].shape[0])
     current_idx += v['value'].shape[0]
-  return default_trace, dict(**mean_and_std)
+  
+  return default_trace, dict(**metadata)
 
 #serialize traces to disk with pickle
 def serialize_traces(traces, path="tmp/dummy_data.pkl"):
