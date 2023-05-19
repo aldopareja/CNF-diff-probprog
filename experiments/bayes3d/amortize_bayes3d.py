@@ -29,11 +29,11 @@ if __name__ == "__main__":
   ########
   
   
-  metadata = load_traces("tmp/1M_bayes3d_metadata.pkl")
-  metadata = dict_to_namedtuple(metadata)
+  variable_metadata = load_traces("tmp/1M_bayes3d_metadata.pkl")
+  variable_metadata = dict_to_namedtuple(variable_metadata)
   
   c = src.InferenceModel.InferenceModelCfg(
-    metadata=metadata,
+    variable_metadata=variable_metadata,
     d_model = 128,
     dropout_rate = 0.1,
     discrete_mlp_width = 512,
@@ -75,7 +75,7 @@ if __name__ == "__main__":
   )
   
   batch_size = 128
-  eval_batch_size = 100
+  eval_batch_size = 2000
   train_sampler = BatchSampler(traces, batch_size)
   
   ######## DEBUG ########

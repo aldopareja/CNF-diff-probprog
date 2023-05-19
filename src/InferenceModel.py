@@ -18,7 +18,7 @@ from src.real_nvp import RealNVP_Flow
 
 @dataclass
 class InferenceModelCfg:
-  metadata: NamedTuple = None
+  variable_metadata: NamedTuple = None
   d_model:int = 256
   dropout_rate:float = 0.1
   discrete_mlp_width:int = 512
@@ -39,7 +39,7 @@ class InferenceModel(eqx.Module):
   obs_to_embed_dict: Dict[str,eqx.nn.MLP]
   num_input_variables: Tuple[int]
   num_observations: int
-  metadata: eqx.static_field()
+  variable_metadata: eqx.static_field() = eqx.static_field()
 
   def __init__(
     self,
@@ -84,7 +84,7 @@ class InferenceModel(eqx.Module):
 
     self.num_input_variables = c.num_input_variables
     self.num_observations = c.num_observations
-    self.metadata = c.metadata
+    self.variable_metadata = c.variable_metadata
 
   def log_p(self, t, key):
     key, sk = split(key, 2)
@@ -108,11 +108,11 @@ class InferenceModel(eqx.Module):
     return the transformed value and the inverse log det jacobian of the original value if it is continuous
     otherwise returns the original value and 0
     '''
-    metadata = getattr(self.metadata, var_name)
+    metadata_k = getattr(self.variable_metadata, var_name)
     is_discrete = jax.lax.cond(value.dtype == jnp.int32, lambda: True, lambda: False)
     value = jnp.float32(value)
     
-    bijector = make_bounding_and_standardization_bijector(metadata)
+    bijector = make_bounding_and_standardization_bijector(metadata_k)
     if var_name != 'obs':
       inv_log_det_jacobian = jax.lax.cond(is_discrete, lambda: jnp.zeros((1,1)), lambda: bijector.inverse_log_det_jacobian(value))
     else:
@@ -263,8 +263,8 @@ class InferenceModel(eqx.Module):
     key, sk = split(key, 2)
     z = self.continuous_flow_dist.rsample(key=sk, cond_vars=emb)
     
-    metadata = getattr(self.metadata, name)
-    bijector = make_bounding_and_standardization_bijector(metadata)
+    metadata_k = getattr(self.variable_metadata, name)
+    bijector = make_bounding_and_standardization_bijector(metadata_k)
     
     z_out = bijector.forward(z).squeeze()
     init_log_p = bijector.inverse_log_det_jacobian(z_out)
