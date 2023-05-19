@@ -87,6 +87,7 @@ class InferenceModel(eqx.Module):
     self.variable_metadata = c.variable_metadata
 
   def log_p(self, t, key):
+    from ipdb import set_trace; set_trace()
     key, sk = split(key, 2)
     embs, is_discrete, outputs, output_log_det_jacobian = self.process_order_and_get_transformer_embs(t, sk)
 

@@ -65,8 +65,8 @@ def make_standardization_bijector(mean, std):
   return tfb.Chain([tfb.Shift(shift=mean), 
                     tfb.Scale(scale=std)])
   
-def make_bounding_and_standardization_bijector(metadata):
-  mean, std, lower_bound, upper_bound = map(lambda x: getattr(metadata, x), ['mean', 'std', 'lower_bound', 'upper_bound'])
+def make_bounding_and_standardization_bijector(variable_metadata):
+  mean, std, lower_bound, upper_bound = map(lambda x: getattr(variable_metadata, x), ['mean', 'std', 'lower_bound', 'upper_bound'])
   return tfb.Chain([make_bounding_bijector(lower_bound, upper_bound), 
                     make_standardization_bijector(mean, std)])
   

@@ -20,12 +20,12 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 
 if __name__ == "__main__":
-  traces = load_traces("tmp/1M_bayes3d.pkl")
-  traces, test_traces = traces[:-2000], traces[-2000:]
+  # traces = load_traces("tmp/1M_bayes3d.pkl")
+  # traces, test_traces = traces[:-2000], traces[-2000:]
   
   ######DEBUG########
-  # traces = load_traces("tmp/1k_bayes3d.pkl")
-  # test_traces = traces
+  traces = load_traces("tmp/1k_bayes3d.pkl")
+  test_traces = traces
   ########
   
   
@@ -49,6 +49,7 @@ if __name__ == "__main__":
   inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
   
   #########Debug ##########
+  inference.log_p(traces[0], key=PRNGKey(0))
   # debug_sampler = BatchSampler(traces, 1000)
   # batch = next(debug_sampler)
   # obs = batch['trace']['obs']['value']
@@ -89,7 +90,7 @@ if __name__ == "__main__":
   
   init_time = time()
   best_eval = np.inf
-  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="1M_bayes3d_b128",total= num_steps):
+  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="1M_bayes3d_gmm_best",total= num_steps):
       start = time()
       # batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -98,7 +99,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item():.4f} t {end-start:.4f}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"1M_bayes3d_b128.eqx"
+        p = out_path / f"1M_bayes3d_gmm_best.eqx"
         eqx.tree_serialise_leaves(p, inference)
         key, sk = split(key)
         start = time()
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         if eval_log_p < best_eval:
           logger.info(f"{str(i).zfill(6)} new best {eval_log_p:.4f}, took {end-start:.2f}, after {(time()-init_time)/60:.2f} min")
           best_eval = eval_log_p
-          p = out_path / f"1M_bayes3d_b128_best.eqx"
+          p = out_path / f"1M_bayes3d_gmm_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   
   
