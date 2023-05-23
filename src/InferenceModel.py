@@ -1,3 +1,6 @@
+from functools import partial
+import numpy as np
+
 import equinox as eqx
 import jax
 from jax import lax, numpy as jnp, vmap
@@ -5,11 +8,10 @@ from jax.random import PRNGKey, split
 from numpyro.handlers import substitute, trace
 
 from typing import Dict, NamedTuple, Tuple
-from tensorflow_probability.substrates import jax as tfp
+from tensorflow_probability.substrates import jax as tfp_j
+tfd_j = tfp_j.distributions
 
-from src.common_bijectors import make_bounding_and_standardization_bijector
-tfb = tfp.bijectors
-tfd = tfp.distributions
+from src.common_bijectors import make_bounding_and_standardization_bijector_np
 
 from dataclasses import dataclass
 from src.encoder import Encoder, EncoderCfg
@@ -23,9 +25,6 @@ class InferenceModelCfg:
   dropout_rate:float = 0.1
   discrete_mlp_width:int = 512
   discrete_mlp_depth:int=4
-  continuous_flow_blocks:int=8
-  continuous_flow_num_layers_per_block:int=2
-  continuous_flow_num_augment:int=91
   num_enc_layers:int=4
   max_discrete_choices:int =5
   num_input_variables:Tuple[int] = (1,2)
@@ -34,7 +33,7 @@ class InferenceModelCfg:
 
 class InferenceModel(eqx.Module):
   input_encoder: Encoder
-  continuous_flow_dist: RealNVP_Flow
+  continuous_dist: eqx.Module
   discrete_mlp_dist: eqx.nn.MLP
   obs_to_embed_dict: Dict[str,eqx.nn.MLP]
   num_input_variables: Tuple[int]
@@ -46,6 +45,7 @@ class InferenceModel(eqx.Module):
     *,
     key: PRNGKey,
     c: InferenceModelCfg = InferenceModelCfg(),
+    continuous_distribution: eqx.Module = None,
   ):
     ks = split(key, 5)
 
@@ -64,17 +64,19 @@ class InferenceModel(eqx.Module):
       depth= c.discrete_mlp_depth,
       key = ks[1]
     )
+    
+    self.continuous_dist = continuous_distribution
 
-    self.continuous_flow_dist = RealNVP_Flow(
-      num_blocks=c.continuous_flow_blocks,
-      num_layers_per_block=c.continuous_flow_num_layers_per_block,
-      block_hidden_size=c.d_model,
-      num_augments=c.continuous_flow_num_augment,
-      num_latents = 1,
-      num_conds = c.d_model,
-      normalizer_width = c.discrete_mlp_depth,
-      key = ks[2],
-    )
+    # self.continuous_flow_dist = RealNVP_Flow(
+    #   num_blocks=c.continuous_flow_blocks,
+    #   num_layers_per_block=c.continuous_flow_num_layers_per_block,
+    #   block_hidden_size=c.d_model,
+    #   num_augments=c.continuous_flow_num_augment,
+    #   num_latents = 1,
+    #   num_conds = c.d_model,
+    #   normalizer_width = c.discrete_mlp_depth,
+    #   key = ks[2],
+    # )
 
     self.obs_to_embed_dict = {i: eqx.nn.Linear(in_features=i,
                                           out_features=c.d_model,
@@ -87,12 +89,11 @@ class InferenceModel(eqx.Module):
     self.variable_metadata = c.variable_metadata
 
   def log_p(self, t, key):
-    from ipdb import set_trace; set_trace()
     key, sk = split(key, 2)
     embs, is_discrete, outputs, output_log_det_jacobian = self.process_order_and_get_transformer_embs(t, sk)
 
     ######## DEBUGGING ########
-    # log_p_ = self.get_causal_log_p(*map(lambda x: x[0], embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete))))
+    # self.continuous_dist.log_p(*map(lambda x: x[2], (outputs, embs, split(key, len(is_discrete)),output_log_det_jacobian)))
 
     all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
     return all_log_p.sum()
@@ -112,10 +113,11 @@ class InferenceModel(eqx.Module):
     metadata_k = getattr(self.variable_metadata, var_name)
     is_discrete = jax.lax.cond(value.dtype == jnp.int32, lambda: True, lambda: False)
     value = jnp.float32(value)
-    
-    bijector = make_bounding_and_standardization_bijector(metadata_k)
+    bijector = make_bounding_and_standardization_bijector_np(metadata_k)
     if var_name != 'obs':
-      inv_log_det_jacobian = jax.lax.cond(is_discrete, lambda: jnp.zeros((1,1)), lambda: bijector.inverse_log_det_jacobian(value))
+      inv_log_det_jacobian = bijector.inverse_log_det_jacobian(value)
+      none_ = jnp.zeros((1,1))
+      inv_log_det_jacobian = jax.lax.cond(is_discrete, lambda: none_, lambda: inv_log_det_jacobian)
     else:
       inv_log_det_jacobian = jnp.zeros((1,1))
     value = jax.lax.cond(is_discrete, lambda: value, lambda: bijector.inverse(value))
@@ -210,10 +212,10 @@ class InferenceModel(eqx.Module):
     return log_p
 
   def continuous_eval_log_prob(self, emb, value, key, init_logp=0.0):
-    return self.continuous_flow_dist.eval_log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
+    return self.continuous_dist.eval_log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
 
   def continuous_log_prob(self, emb, value, key, init_logp=0.0):
-    return self.continuous_flow_dist.log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
+    return self.continuous_dist.log_p(z=value, cond_vars=emb, key=key, init_logp=init_logp)
 
   @staticmethod
   @eqx.filter_jit
@@ -262,11 +264,10 @@ class InferenceModel(eqx.Module):
   @eqx.filter_jit
   def sample_continuous(self, emb, *, key, name):
     key, sk = split(key, 2)
-    z = self.continuous_flow_dist.rsample(key=sk, cond_vars=emb)
+    z = self.continuous_dist.rsample(key=sk, cond_vars=emb)
     
     metadata_k = getattr(self.variable_metadata, name)
-    bijector = make_bounding_and_standardization_bijector(metadata_k)
-    
+    bijector = make_bounding_and_standardization_bijector_np(metadata_k)
     z_out = bijector.forward(z).squeeze()
     init_log_p = bijector.inverse_log_det_jacobian(z_out)
 
@@ -291,7 +292,7 @@ class InferenceModel(eqx.Module):
       is_discrete = v['value'].dtype in (jnp.int32, jnp.int64)
       if is_discrete:
         logits = self.discrete_mlp_dist(emb)
-        sample = tfd.Categorical(logits=logits).sample(seed=sk1)
+        sample = tfd_j.Categorical(logits=logits).sample(seed=sk1)
         log_p_ = logits[sample] - jax.nn.logsumexp(logits)
       else:
         sample, log_p_ = self.sample_continuous(emb, key=sk1, name=k)
@@ -304,4 +305,41 @@ class InferenceModel(eqx.Module):
       sub_model = substitute(gen_model_sampler, sampled_latents)
       exec_trace = trace(sub_model).get_trace(sk3)
 
+    return sampled_latents, exec_trace, log_p
+  
+  # @partial(jax.jit, static_argnums=(1,))
+  # @eqx.filter_jit
+  def rsample_static(self, obs, exec_trace, key):
+    # assert obs.shape == () #TODO: this only works for unary observations, which is fine, but not necessarily
+    key, sk1, sk2 = split(key,3)
+    emb, enc_input = self.add_new_variable_to_sequence(obs, key=sk1, name='obs')
+
+    # exec_trace = trace(gen_model_sampler).get_trace(sk2)
+    sampled_latents = {}
+    log_p = 0.0
+    while True:
+      k,v = self.get_next_latent(exec_trace, sampled_latents)
+      print(k, "init")
+      if k is None or k=='obs':
+        break
+
+      key, sk1, sk2, sk3 = split(key, 4)
+      is_discrete = v
+      if is_discrete:
+        logits = self.discrete_mlp_dist(emb)
+        print(logits.shape,"logits")
+        sample = tfd_j.Categorical(logits=logits).sample(seed=sk1)
+        log_p_ = logits[sample] - jax.nn.logsumexp(logits)
+      else:
+        print(k,v)
+        sample, log_p_ = self.sample_continuous(emb, key=sk1, name=k)
+      
+      log_p += log_p_
+
+      emb, enc_input = self.add_new_variable_to_sequence(sample, enc_input=enc_input, key=sk2, name=k)
+      sampled_latents[k] = sample
+
+      # sub_model = substitute(gen_model_sampler, sampled_latents)
+      # exec_trace = trace(sub_model).get_trace(sk3)
+    print(k,v)
     return sampled_latents, exec_trace, log_p

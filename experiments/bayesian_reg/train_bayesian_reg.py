@@ -6,7 +6,8 @@ from jax import vmap
 
 from tensorflow_probability.substrates import jax as tfp
 
-import src.InferenceModel
+from src.diffusion_head import DiffusionHead, DiffusionConf
+from src.InferenceModel import InferenceModel, InferenceModelCfg
 tfb = tfp.bijectors
 
 import equinox as eqx
@@ -31,21 +32,36 @@ if __name__ == "__main__":
   means_and_stds = load_traces("experiments/bayesian_reg/means_and_stds.pkl")
   means_and_stds = dict_to_namedtuple(means_and_stds)
   
-  c = src.InferenceModel.InferenceModelCfg(
-    d_model = 128,
-    dropout_rate = 0.1,
-    discrete_mlp_width = 512,
-    discrete_mlp_depth=1,
-    continuous_flow_blocks=8,
-    continuous_flow_num_layers_per_block=2,
-    continuous_flow_num_augment=91,
-    num_enc_layers=5,
-    max_discrete_choices =6,
-    num_input_variables = (1,),
-    num_observations =6,
-    means_and_stds=means_and_stds,
+  continuous_distribution = DiffusionHead(
+    c=DiffusionConf(
+      num_latents=1,
+      width_size=256,
+      depth=3,
+      num_conds=128,
+      num_steps=100,
+      noise_scale=0.008
+    ),
+    key=PRNGKey(13),
   )
-  inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
+  
+  inference = InferenceModel(
+    key=PRNGKey(0),
+    c=InferenceModelCfg(
+      d_model = 128,
+      dropout_rate = 0.1,
+      discrete_mlp_width = 512,
+      discrete_mlp_depth=1,
+      continuous_flow_blocks=8,
+      continuous_flow_num_layers_per_block=2,
+      continuous_flow_num_augment=91,
+      num_enc_layers=5,
+      max_discrete_choices =6,
+      num_input_variables = (1,),
+      num_observations =6,
+      means_and_stds=means_and_stds,
+      ),
+    continuous_distribution=continuous_distribution
+    )
   
   # inference = eqx.tree_deserialise_leaves("tmp/1MM_blr_00005_eval_last_2_norm.eqx", inference)
   

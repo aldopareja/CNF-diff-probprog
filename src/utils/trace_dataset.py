@@ -12,7 +12,7 @@ from pathlib import Path
 import pickle
 import numpy as np
 
-from src.common_bijectors import make_bounding_bijector
+from src.common_bijectors import make_bounding_bijector_np
 
 def get_trace(args):
   m,k = args
@@ -143,7 +143,7 @@ def build_default_trace(traces, max_traces_to_use):
               for k_,v_ in bounds.items() }
         
     if default_trace[k]['value'].dtype in (np.float32, np.float64):
-      v = make_bounding_bijector(**bounds).inverse(v)
+      v = make_bounding_bijector_np(**bounds).inverse(v)
       metadata[k] = {'mean': np.mean(v, axis=0, keepdims=True), 
                      'std': np.std(v, axis=0, keepdims=True),
                      **bounds}

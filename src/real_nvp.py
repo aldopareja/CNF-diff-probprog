@@ -5,11 +5,11 @@ from jax import jit, numpy as jnp
 from jax.random import PRNGKey, split
 from jaxtyping import Array
 
-from tensorflow_probability.substrates import jax as tfp
+from tensorflow_probability.substrates import jax as tfp_j
 
 from src.Normalizer import Normalizer
-tfd = tfp.distributions
-tfb = tfp.bijectors
+tfd_j = tfp_j.distributions
+tfb_j = tfp_j.bijectors
 
 import equinox as eqx
 
@@ -165,7 +165,7 @@ class RealNVP_Flow(eqx.Module):
       z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
       log_prob += inv_log_det_jac
       
-    log_prob += tfd.Normal(0, 1).log_prob(z_aug).sum() 
+    log_prob += tfd_j.Normal(0, 1).log_prob(z_aug).sum() 
     
     return log_prob + normalizer_log_p
   
@@ -183,13 +183,13 @@ class RealNVP_Flow(eqx.Module):
       z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
       log_prob += inv_log_det_jac
       
-    log_prob += tfd.Normal(0, 1).log_prob(z_aug).sum() 
+    log_prob += tfd_j.Normal(0, 1).log_prob(z_aug).sum() 
     
     return log_prob
   
   @eqx.filter_jit
   def rsample(self, key, cond_vars):
-    z = tfd.Normal(0, 1).sample(
+    z = tfd_j.Normal(0, 1).sample(
       seed = key, sample_shape=(self.num_latents + self.num_augments,)
     )
     

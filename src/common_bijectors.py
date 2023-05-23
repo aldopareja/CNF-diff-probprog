@@ -1,11 +1,11 @@
 from jax import numpy as jnp
 
-from tensorflow_probability.substrates import jax as tfp
+from tensorflow_probability.substrates import jax as tfp_jax
+from tensorflow_probability.substrates import numpy as tfp_np
+tfd_np = tfp_jax.distributions
+tfb_np = tfp_jax.bijectors
 
-tfd = tfp.distributions
-tfb = tfp.bijectors
-
-class ClippingBijector(tfb.Bijector):
+class ClippingBijector(tfb_np.Bijector):
   '''
   dummy clipping bijector that just restricts the values of the input in the reversed direction
   keeping the forward direction unchanged and making the ILDJ 0.0 regardless.
@@ -35,38 +35,38 @@ class ClippingBijector(tfb.Bijector):
       # Return 0.0 for the FLDJ
       return jnp.zeros_like(x)
 
-def make_bounding_bijector(lower_bound=None, upper_bound=None):
+def make_bounding_bijector_np(lower_bound=None, upper_bound=None):
   if lower_bound is not None and upper_bound is not None:
     scale = upper_bound - lower_bound
     shift = lower_bound
-    return tfb.Chain([
+    return tfb_np.Chain([
       ClippingBijector(clip_value_min=lower_bound, clip_value_max=upper_bound),
-      tfb.Shift(shift=shift),
-      tfb.Scale(scale=scale),
-      tfb.Sigmoid()
+      tfb_np.Shift(shift=shift),
+      tfb_np.Scale(scale=scale),
+      tfb_np.Sigmoid()
     ])
   elif lower_bound is not None:
-    return tfb.Chain([
+    return tfb_np.Chain([
       ClippingBijector(clip_value_min=lower_bound),
-      tfb.Shift(shift=lower_bound),
-      tfb.Softplus()
+      tfb_np.Shift(shift=lower_bound),
+      tfb_np.Softplus()
     ])
   elif upper_bound is not None:
-    return tfb.Chain([
+    return tfb_np.Chain([
       ClippingBijector(clip_value_max=upper_bound),
-      tfb.Shift(shift=upper_bound),
-      tfb.Scale(scale=-1),
-      tfb.Softplus()
+      tfb_np.Shift(shift=upper_bound),
+      tfb_np.Scale(scale=-1),
+      tfb_np.Softplus()
     ])
   else:
-    return tfb.Identity()
+    return tfb_np.Identity()
 
-def make_standardization_bijector(mean, std):
-  return tfb.Chain([tfb.Shift(shift=mean), 
-                    tfb.Scale(scale=std)])
+def make_standardization_bijector_np(mean, std):
+  return tfb_np.Chain([tfb_np.Shift(shift=mean), 
+                    tfb_np.Scale(scale=std)])
   
-def make_bounding_and_standardization_bijector(variable_metadata):
+def make_bounding_and_standardization_bijector_np(variable_metadata):
   mean, std, lower_bound, upper_bound = map(lambda x: getattr(variable_metadata, x), ['mean', 'std', 'lower_bound', 'upper_bound'])
-  return tfb.Chain([make_bounding_bijector(lower_bound, upper_bound), 
-                    make_standardization_bijector(mean, std)])
+  return tfb_np.Chain([make_bounding_bijector_np(lower_bound, upper_bound), 
+                    make_standardization_bijector_np(mean, std)])
   

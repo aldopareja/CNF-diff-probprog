@@ -3,12 +3,14 @@ from pathlib import Path
 from time import time
 from jax.random import PRNGKey, split
 from jax.tree_util import tree_map
+from jax import numpy as jnp
 
 import equinox as eqx
 import numpy as np
 import optax
 from tqdm import tqdm
 
+from src.gaussian_mixture_head import GaussianMixture, GaussianMixtureCfg
 import src.InferenceModel
 from src.utils.common_training_functions import eval_batch, evaluate_per_batch, make_step, sample_random_batch, BatchSampler
 from src.utils.trace_dataset import load_traces, serialize_traces
@@ -20,17 +22,28 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 
 if __name__ == "__main__":
-  # traces = load_traces("tmp/1M_bayes3d.pkl")
-  # traces, test_traces = traces[:-2000], traces[-2000:]
+  traces = load_traces("tmp/1M_bayes3d.pkl")
+  traces, test_traces = traces[:-2000], traces[-2000:]
   
   ######DEBUG########
-  traces = load_traces("tmp/1k_bayes3d.pkl")
-  test_traces = traces
+  # traces = load_traces("tmp/1k_bayes3d.pkl")
+  # test_traces = traces
   ########
   
   
   variable_metadata = load_traces("tmp/1M_bayes3d_metadata.pkl")
+  variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)
+  
+  gmc = GaussianMixtureCfg(
+    mlp_width=512,
+    d_model=128,
+    mlp_depth=1,
+    num_mixtures=3,
+  )
+  
+  continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
+  
   
   c = src.InferenceModel.InferenceModelCfg(
     variable_metadata=variable_metadata,
@@ -38,18 +51,19 @@ if __name__ == "__main__":
     dropout_rate = 0.1,
     discrete_mlp_width = 512,
     discrete_mlp_depth=1,
-    continuous_flow_blocks=8,
-    continuous_flow_num_layers_per_block=2,
-    continuous_flow_num_augment=91,
     num_enc_layers=5,
     max_discrete_choices =6,
     num_input_variables = (225,1),
     num_observations =100,
   )
-  inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),c=c)
+  inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),
+                                                c=c,
+                                                continuous_distribution=continuous_distribution,)
   
   #########Debug ##########
-  inference.log_p(traces[0], key=PRNGKey(0))
+  # from IPython import embed; embed(using=False)
+  # inference.log_p(tree_map(jnp.array,traces[0]), key=PRNGKey(0))
+  # from ipdb import set_trace; set_trace()
   # debug_sampler = BatchSampler(traces, 1000)
   # batch = next(debug_sampler)
   # obs = batch['trace']['obs']['value']

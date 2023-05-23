@@ -2,10 +2,10 @@ import equinox as eqx
 import jax
 from jax import numpy as jnp
 
-from tensorflow_probability.substrates import jax as tfp
+from tensorflow_probability.substrates import jax as tfp_j
 
-tfd = tfp.distributions
-tfb = tfp.bijectors
+tfd_j = tfp_j.distributions
+tfb_j = tfp_j.bijectors
 
 
 
@@ -27,7 +27,7 @@ class Normalizer(eqx.Module):
     sigma = jax.nn.softplus(sigma)
     means_, stds_ = map(jax.lax.stop_gradient,
                         (mu, sigma))
-    bijector = tfb.Chain([tfb.Shift(means_), tfb.Scale(stds_)])
+    bijector = tfb_j.Chain([tfb_j.Shift(means_), tfb_j.Scale(stds_)])
     return bijector.forward(x), bijector.forward_log_det_jacobian(x).sum()
 
   def reverse(self, y, cond_vars):
@@ -36,16 +36,16 @@ class Normalizer(eqx.Module):
     sigma = jax.nn.softplus(sigma)
     means_, stds_ = map(jax.lax.stop_gradient,
                         (mu, sigma))
-    bijector = tfb.Chain([tfb.Shift(means_), tfb.Scale(stds_)])
+    bijector = tfb_j.Chain([tfb_j.Shift(means_), tfb_j.Scale(stds_)])
     return bijector.inverse(y), bijector.inverse_log_det_jacobian(y).sum()
 
   def gaussian_log_p(self, x, cond_vars):
     assert x.ndim == 1
     mu, sigma = self.normalizer_nn(cond_vars).split(2)
     sigma = jax.nn.softplus(sigma)
-    bijector = tfb.Chain([tfb.Shift(mu), tfb.Scale(sigma)])
+    bijector = tfb_j.Chain([tfb_j.Shift(mu), tfb_j.Scale(sigma)])
     log_p = bijector.inverse_log_det_jacobian(x)
     x_ = bijector.inverse(x)
-    log_p += tfd.Normal(loc=jnp.zeros_like(mu),
+    log_p += tfd_j.Normal(loc=jnp.zeros_like(mu),
                         scale=jnp.ones_like(sigma)).log_prob(x_)
     return log_p.sum()
