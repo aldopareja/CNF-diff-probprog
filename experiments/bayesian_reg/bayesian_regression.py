@@ -61,7 +61,7 @@ def get_contours(plt, mu, cov, N=200):
     return X, Y, Z
 
 def plot_posterior(plt, mu, cov, proposal_samples,):
-    plt.scatter([sample['x2'] for sample in proposal_samples], [sample['x1'] for sample in proposal_samples], alpha=0.5, s=5., label="proposal", color='red')
+    plt.scatter(proposal_samples['x2'], proposal_samples['x1'], alpha=0.5, s=5., label="proposal", color='red')
     if mu is not None and cov is not None:
         X, Y, Z = get_contours(plt, mu, cov)
         plt.contourf(X, Y, Z, alpha=0.5, cmap='viridis')

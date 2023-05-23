@@ -20,6 +20,8 @@ import numpy as np
 from tensorflow_probability.substrates import jax as tfp_j
 tfd_j = tfp_j.distributions
 
+from src.ResnetMLP import ResnetMLP
+
 from src.Normalizer import Normalizer
 
 import logging
@@ -34,97 +36,16 @@ class DiffusionConf:
     num_steps: int = 100
     noise_scale: float = 0.008
     dropout_rate: float = 0.1
-
-
-# class ConcatSquash(eqx.Module):
-#     lin1: eqx.nn.Linear
-#     lin2: eqx.nn.Linear
-#     lin3: eqx.nn.Linear
-
-#     def __init__(self, *, in_size, out_size, key):
-#         super().__init__()
-#         k1, k2, k3 = split(key, 3)
-#         self.lin1 = eqx.nn.Linear(in_size, out_size, key=k1)
-#         self.lin2 = eqx.nn.Linear(1, out_size, key=k2)
-#         self.lin3 = eqx.nn.Linear(1, out_size, use_bias=False, key=k3)
-
-#     def __call__(self, t, x):
-#         return self.lin1(x) * jax.nn.sigmoid(self.lin2(t)) + self.lin3(t)
-
-
-# class DiffusionNet(eqx.Module):
-#     layers: List[ConcatSquash]
-
-#     def __init__(self, *, num_latents, num_conds, width_size, depth, key):
-#         assert depth >= 1
-#         ks = split(key, depth + 1)
-#         layers = []
-#         layers.append(
-#             ConcatSquash(
-#                 in_size=num_latents + num_conds, out_size=width_size, key=ks[0]
-#             )
-#         )
-#         for i in range(depth - 1):
-#             layers.append(
-#                 ConcatSquash(in_size=width_size, out_size=width_size, key=ks[i + 1])
-#             )
-#         layers.append(
-#             ConcatSquash(in_size=width_size, out_size=num_latents, key=ks[-1])
-#         )
-#         self.layers = layers
-
-#     def __call__(self, z, cond_vars):
-#         assert len(cond_vars.shape) == 1
-#         t = jnp.asarray(t)[None]
-#         z = self.layers[0](t, jnp.concatenate([z, cond_vars]))
-#         z = jax.nn.tanh(z)
-#         for layer in self.layers[1:-1]:
-#             z = layer(t, z)
-#             z = jax.nn.tanh(z)
-#         z = self.layers[-1](t, z)
-#         return z
-    
-class DiffusionResBlock(eqx.Module):
-    in_linear: eqx.nn.Linear
-    out_linear: eqx.nn.Linear
-    layer_norm: eqx.nn.LayerNorm
-    dropout: eqx.nn.Dropout
-    
-    def __init__(
-        self,
-        *,
-        width_size,
-        in_size,
-        out_size,
-        dropout_rate,
-        key,
-    ):
-        ks = split(key, 2)
-        self.in_linear = eqx.nn.Linear(in_features=in_size, out_features=width_size, key=ks[0])
-        self.out_linear = eqx.nn.Linear(in_features=width_size, out_features=out_size, key=ks[1])
-        self.layer_norm = eqx.nn.LayerNorm(out_size)
-        self.dropout = eqx.nn.Dropout(dropout_rate)
-        
-    def __call__(self, x, key):
-        x_ = self.in_linear(x)
-        x_ = jax.nn.gelu(x_)
-        x_ = self.out_linear(x_)
-        x_ = self.dropout(x_, key=key)
-        
-        x = x + x_
-        x = self.layer_norm(x)
-        return x
-        
     
 class DiffusionNet(eqx.Module):
-    layers: List[DiffusionResBlock]
+    layers: List[ResnetMLP]
     output_layer: eqx.nn.Linear
     
     def __init__(self, *, num_latents, num_conds, width_size, depth, dropout_rate, key):
         assert depth >= 1
         key, sk = split(key, 2)
         self.layers = [
-            DiffusionResBlock(
+            ResnetMLP(
                 width_size=width_size,
                 in_size=num_latents + num_conds,
                 out_size=num_latents+num_conds,

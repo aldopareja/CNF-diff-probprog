@@ -37,36 +37,37 @@ if __name__ == "__main__":
   variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)
   
-  continuous_distribution = DiffusionHead(
-    c=DiffusionConf(
-      num_latents=1,
-      width_size=256,
-      depth=3,
-      num_conds=128,
-      num_steps=100,
-      noise_scale=0.008,
-      dropout_rate=0.1,
-    ),
-    key=PRNGKey(13),
-  )
-  # gmc = GaussianMixtureCfg(
-  #   mlp_width=512,
-  #   d_model=128,
-  #   mlp_depth=1,
-  #   num_mixtures=3,
+  # continuous_distribution = DiffusionHead(
+  #   c=DiffusionConf(
+  #     num_latents=1,
+  #     width_size=256,
+  #     depth=3,
+  #     num_conds=128,
+  #     num_steps=100,
+  #     noise_scale=0.008,
+  #     dropout_rate=0.1,
+  #   ),
+  #   key=PRNGKey(13),
   # )
+  gmc = GaussianMixtureCfg(
+    resnet_mlp_width=512,
+    d_model=256,
+    num_mlp_blocks=3,
+    num_mixtures=3,
+    dropout_rate=0.0,
+  )
   
-  # continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
+  continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
   
   inference = InferenceModel(
     key=PRNGKey(0),
     c=InferenceModelCfg(
         variable_metadata=variable_metadata,
-        d_model = 128,
-        dropout_rate = 0.1,
+        d_model = 256,
+        dropout_rate = 0.0,
         discrete_mlp_width = 512,
         discrete_mlp_depth=1,
-        num_enc_layers=5,
+        num_enc_layers=4,
         max_discrete_choices =6,
         num_input_variables = (1,),
         num_observations =6,
@@ -74,7 +75,7 @@ if __name__ == "__main__":
     continuous_distribution=continuous_distribution
     )
   
-  # inference = eqx.tree_deserialise_leaves("tmp/1MM_blr_00005_eval_last_2_norm.eqx", inference)
+  # inference = eqx.tree_deserialise_leaves("tmp/blr_10k_0005_gmm_no_norm.eqx", inference)
   
   ########### DEBUG ###############
   # inference.log_p(tree_map(jnp.array,traces[0]), key=PRNGKey(0))
@@ -82,13 +83,13 @@ if __name__ == "__main__":
   # eval = eval_batch(inference, eval_traces_batch, PRNGKey(0))
   # from IPython import embed; embed()
   
-  num_steps = 100000
+  num_steps = 10000
   optim = optax.chain(
       optax.clip_by_global_norm(5.0),
       optax.adamw(
           learning_rate=optax.cosine_onecycle_schedule(
               num_steps,
-              0.00025,
+              0.0005,
               0.01,
               1e1,
               1e2,
@@ -105,7 +106,7 @@ if __name__ == "__main__":
   out_path = Path("tmp/")
   best_eval = float("inf")
   os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps), desc="blr_diff_100k"):
+  for i in tqdm(range(num_steps), desc="blr_10k_0005_gmm"):
       start = time()
       batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -114,7 +115,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"blr_diff_100k.eqx"
+        p = out_path / f"blr_10k_0005_gmm.eqx"
         eqx.tree_serialise_leaves(p, inference)
 
         key, sk = split(key)
@@ -124,6 +125,6 @@ if __name__ == "__main__":
         if eval_log_p < best_eval:
           logger.info(f"new best {eval_log_p}, took {end-start}")
           best_eval = eval_log_p
-          p = out_path / f"blr_diff_100k_best.eqx"
+          p = out_path / f"blr_10k_0005_gmm_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   

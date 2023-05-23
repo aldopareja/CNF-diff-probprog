@@ -35,9 +35,9 @@ if __name__ == "__main__":
   variable_metadata = dict_to_namedtuple(variable_metadata)
   
   gmc = GaussianMixtureCfg(
-    mlp_width=512,
+    resnet_mlp_width=512,
     d_model=128,
-    mlp_depth=1,
+    resnet_mlp_depth=1,
     num_mixtures=3,
   )
   
