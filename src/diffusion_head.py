@@ -33,85 +33,145 @@ class DiffusionConf:
     num_conds: int =128
     num_steps: int = 100
     noise_scale: float = 0.008
+    dropout_rate: float = 0.1
 
 
-class ConcatSquash(eqx.Module):
-    lin1: eqx.nn.Linear
-    lin2: eqx.nn.Linear
-    lin3: eqx.nn.Linear
+# class ConcatSquash(eqx.Module):
+#     lin1: eqx.nn.Linear
+#     lin2: eqx.nn.Linear
+#     lin3: eqx.nn.Linear
 
-    def __init__(self, *, in_size, out_size, key):
-        super().__init__()
-        k1, k2, k3 = split(key, 3)
-        self.lin1 = eqx.nn.Linear(in_size, out_size, key=k1)
-        self.lin2 = eqx.nn.Linear(1, out_size, key=k2)
-        self.lin3 = eqx.nn.Linear(1, out_size, use_bias=False, key=k3)
+#     def __init__(self, *, in_size, out_size, key):
+#         super().__init__()
+#         k1, k2, k3 = split(key, 3)
+#         self.lin1 = eqx.nn.Linear(in_size, out_size, key=k1)
+#         self.lin2 = eqx.nn.Linear(1, out_size, key=k2)
+#         self.lin3 = eqx.nn.Linear(1, out_size, use_bias=False, key=k3)
 
-    def __call__(self, t, x):
-        return self.lin1(x) * jax.nn.sigmoid(self.lin2(t)) + self.lin3(t)
+#     def __call__(self, t, x):
+#         return self.lin1(x) * jax.nn.sigmoid(self.lin2(t)) + self.lin3(t)
 
 
+# class DiffusionNet(eqx.Module):
+#     layers: List[ConcatSquash]
+
+#     def __init__(self, *, num_latents, num_conds, width_size, depth, key):
+#         assert depth >= 1
+#         ks = split(key, depth + 1)
+#         layers = []
+#         layers.append(
+#             ConcatSquash(
+#                 in_size=num_latents + num_conds, out_size=width_size, key=ks[0]
+#             )
+#         )
+#         for i in range(depth - 1):
+#             layers.append(
+#                 ConcatSquash(in_size=width_size, out_size=width_size, key=ks[i + 1])
+#             )
+#         layers.append(
+#             ConcatSquash(in_size=width_size, out_size=num_latents, key=ks[-1])
+#         )
+#         self.layers = layers
+
+#     def __call__(self, z, cond_vars):
+#         assert len(cond_vars.shape) == 1
+#         t = jnp.asarray(t)[None]
+#         z = self.layers[0](t, jnp.concatenate([z, cond_vars]))
+#         z = jax.nn.tanh(z)
+#         for layer in self.layers[1:-1]:
+#             z = layer(t, z)
+#             z = jax.nn.tanh(z)
+#         z = self.layers[-1](t, z)
+#         return z
+    
+class DiffusionResBlock(eqx.Module):
+    in_linear: eqx.nn.Linear
+    out_linear: eqx.nn.Linear
+    layer_norm: eqx.nn.LayerNorm
+    dropout: eqx.nn.Dropout
+    
+    def __init__(
+        self,
+        *,
+        width_size,
+        in_size,
+        out_size,
+        dropout_rate,
+        key,
+    ):
+        ks = split(key, 2)
+        self.in_linear = eqx.nn.Linear(in_features=in_size, out_features=width_size, key=ks[0])
+        self.out_linear = eqx.nn.Linear(in_features=width_size, out_features=out_size, key=ks[1])
+        self.layer_norm = eqx.nn.LayerNorm(out_size)
+        self.dropout = eqx.nn.Dropout(dropout_rate)
+        
+    def __call__(self, x, key):
+        x_ = self.in_linear(x)
+        x_ = jax.nn.gelu(x_)
+        x_ = self.out_linear(x_)
+        x_ = self.dropout(x_, key=key)
+        
+        x = x + x_
+        x = self.layer_norm(x)
+        return x
+        
+    
 class DiffusionNet(eqx.Module):
-    layers: List[ConcatSquash]
-
-    def __init__(self, *, num_latents, num_conds, width_size, depth, key):
+    layers: List[DiffusionResBlock]
+    output_layer: eqx.nn.Linear
+    
+    def __init__(self, *, num_latents, num_conds, width_size, depth, dropout_rate, key):
         assert depth >= 1
-        ks = split(key, depth + 1)
-        layers = []
-        layers.append(
-            ConcatSquash(
-                in_size=num_latents + num_conds, out_size=width_size, key=ks[0]
+        key, sk = split(key, 2)
+        self.layers = [
+            DiffusionResBlock(
+                width_size=width_size,
+                in_size=num_latents + num_conds,
+                out_size=num_latents+num_conds,
+                dropout_rate=dropout_rate,
+                key=k
             )
+            for k in split(key, depth)
+        ]
+        
+        self.output_layer = eqx.nn.Linear(
+            in_features=num_latents+num_conds, 
+            out_features=num_latents,
+            key=sk,
         )
-        for i in range(depth - 1):
-            layers.append(
-                ConcatSquash(in_size=width_size, out_size=width_size, key=ks[i + 1])
-            )
-        layers.append(
-            ConcatSquash(in_size=width_size, out_size=num_latents, key=ks[-1])
-        )
-        self.layers = layers
-
-    def __call__(self, z, cond_vars):
+        
+        
+    def __call__(self, z, cond_vars, key):
         assert len(cond_vars.shape) == 1
-        t = jnp.asarray(t)[None]
-        z = self.layers[0](t, jnp.concatenate([z, cond_vars]))
-        z = jax.nn.tanh(z)
-        for layer in self.layers[1:-1]:
-            z = layer(t, z)
-            z = jax.nn.tanh(z)
-        z = self.layers[-1](t, z)
+        z = jnp.concatenate([z, cond_vars])
+        for layer in self.layers:
+            z = layer(z, key=key)
+        z = self.output_layer(z)
         return z
-
 
 class DiffusionHead(eqx.Module):
     diffusion_net: DiffusionNet
     normalizer: Normalizer
-    num_steps: int
-    alpha: np.array = eqx.static_field()
-    alpha_bar: np.array = eqx.static_field()
-    sigma2: np.array = eqx.static_field()
-    sqrt_one_minus_alphas_cumprod: np.array = eqx.static_field()
-    sqrt_alphas_cumprod: np.array = eqx.static_field()
-    time_pos_emb: np.array = eqx.static_field()
-    mu_1: np.array = eqx.static_field()
-    mu_2: np.array = eqx.static_field()
-    posterior_log_variance_clipped: np.array = eqx.static_field()
+    num_steps: int = eqx.static_field()
+    sqrt_one_minus_alphas_cumprod: jnp.array = eqx.static_field()
+    sqrt_alphas_cumprod: jnp.array = eqx.static_field()
+    time_pos_emb: jnp.array = eqx.static_field()
+    mu_1: jnp.array = eqx.static_field()
+    mu_2: jnp.array = eqx.static_field()
+    posterior_std: jnp.array = eqx.static_field()
 
     def __init__(self, *, c: DiffusionConf, key: PRNGKey):
                  
-        num_latents, num_conds, width_size, depth, num_steps, noise_scale = \
-            map(lambda x: getattr(c, x), ['num_latents', 'num_conds', 'width_size', 'depth', 'num_steps', 'noise_scale'])
-                
-        
-        
-        super().__init__()
+        num_latents, num_conds, width_size, depth, num_steps, noise_scale, dropout_rate = \
+            map(lambda x: getattr(c, x), ['num_latents', 'num_conds', 'width_size', 'depth', 'num_steps', 'noise_scale', 'dropout_rate'])
+            
         ks = split(key, 2)
         self.diffusion_net = DiffusionNet(
             num_latents=num_latents,
             num_conds=num_conds,
             width_size=width_size,
             depth=depth,
+            dropout_rate=dropout_rate,
             key=ks[0],
         )
         self.normalizer = Normalizer(
@@ -120,74 +180,108 @@ class DiffusionHead(eqx.Module):
             hidden_size=width_size,
             key=ks[1]
         )
-        self.time_pos_emb = np.array(positional_encoding(num_steps, width_size))
+        self.time_pos_emb = jnp.array(positional_encoding(num_steps, num_conds))
 
         self.num_steps = num_steps
         betas = cosine_beta_schedule(num_steps, noise_scale)
 
         #for training
         alphas = 1. - betas
-        alphas_cumprod = np.cumprod(alphas)
-        self.sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1. - alphas_cumprod)
+        alphas_cumprod = jnp.cumprod(alphas)
+        self.sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = jnp.sqrt(1. - alphas_cumprod)
 
         #for sampling --> refer to DDPM https://arxiv.org/pdf/2006.11239v2.pdf equation (7)
-        alphas_cumprod_prev = np.concatenate([[1.], alphas_cumprod[:-1]])
-        self.mu_1 = betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)
-        self.mu_2 = (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod)
+        alphas_cumprod_prev = jnp.concatenate([jnp.array([1.]), alphas_cumprod[:-1]])
+        self.mu_1 = betas * jnp.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)
+        self.mu_2 = (1. - alphas_cumprod_prev) * jnp.sqrt(alphas) / (1. - alphas_cumprod)
 
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
-        self.posterior_std = (np.clip(posterior_variance, 1e-20)) ** 0.5
+        self.posterior_std = (jnp.clip(posterior_variance, 1e-20, 1e20)) ** 0.5
         
     def eval_log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('this adds an MSE and the logprobability of the data under the normalizer, which is not sound, but the higher the better')
-        z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
 
-        log_prob = init_logp + inv_log_det_jac_normalizer
+        ks = split(key, 3)
 
-        ks = split(key, 2)
-
-        t = jax.random.randint(ks[0], (), 0, self.num_steps)
+        t = jax.random.choice(ks[0], jnp.arange(self.num_steps), shape=(),)
+        # t = jax.random.randint(ks[0], (), 0, self.num_steps)
 
         q_noise = jax.random.normal(ks[1], z.shape)
         q_sample = self.sqrt_alphas_cumprod[t] * z + \
                     self.sqrt_one_minus_alphas_cumprod[t] * q_noise
 
-        p_sample = self.diffusion_net(q_sample, cond_vars + self.time_pos_emb[t])
+        p_sample = self.diffusion_net(q_sample, 
+                                      cond_vars + self.time_pos_emb[t], 
+                                      key=ks[2])
 
-        return log_prob - ((p_sample - q_sample) ** 2).mean()        
+        return -((p_sample - q_sample) ** 2).mean()#-jnp.abs(p_sample - q_sample).mean()#
 
     def log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('only a loss, discrete diffusion does not directly compute log_likelihoods')
         assert z.ndim == 1 and z.shape[0] == 1
         normalizer_log_p = self.normalizer.gaussian_log_p(z, cond_vars)
+        z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
 
-        eval_loss = self.eval_log_p(z, cond_vars, key, init_logp=init_logp)
+        log_prob = init_logp + inv_log_det_jac_normalizer
+
+        recon_loss = self.eval_log_p(z, cond_vars, key, init_logp=init_logp)
         
-        return normalizer_log_p + eval_loss
+        return normalizer_log_p + log_prob + recon_loss.mean()
 
-    def rsample(self, cond_vars, key):
+    def rsample_slow(self, cond_vars, key):
         assert cond_vars.ndim == 1
 
-        ks = split(key, self.num_steps+1)
+        key, sk = split(key, 2)
 
-        x_t = jax.random.normal(ks[self.num_steps], (1,))
+        x_t = jax.random.normal(sk, (1,))
 
         log_p = 0.0
 
         for t in reversed(range(self.num_steps)):
-            x_0_pred = self.diffusion_net(x_t, cond_vars + self.time_pos_emb[self.num_steps])
+            key, *ks = split(key, 3)
+            x_0_pred = self.diffusion_net(x_t, cond_vars + self.time_pos_emb[t], key=ks[0])
             
             mu = self.mu_1[t] * x_0_pred + self.mu_2[t] * x_t
             sigma = self.posterior_std[t]
             q_posterior = tfd_j.Normal(loc=mu,scale=sigma)
 
-            x_t = q_posterior.sample(seed=ks[t], sample_shape=(1,))
+            x_t = q_posterior.sample(seed=ks[1], sample_shape=())
             log_p += q_posterior.log_prob(x_t)
             
         x_0_pred, forward_log_det_jac = self.normalizer.forward(x_0_pred, cond_vars)
         log_p += forward_log_det_jac
         
+        return x_0_pred, log_p
+    
+    def rsample(self, cond_vars, key):
+        assert cond_vars.ndim == 1
+
+        key, sk = split(key, 2)
+
+        x_t = jax.random.normal(sk, (1,))
+
+        log_p = jnp.zeros((1,))
+
+        def scan_fn(carry, t):
+            key, x_t, x_0_pred, log_p = carry
+            key, *ks = split(key, 3)
+            x_0_pred = self.diffusion_net(x_t, cond_vars + self.time_pos_emb[t], key=ks[0])
+
+            mu = self.mu_1[t] * x_0_pred + self.mu_2[t] * x_t
+            sigma = self.posterior_std[t]
+            q_posterior = tfd_j.Normal(loc=mu,scale=sigma)
+
+            x_t = q_posterior.sample(seed=ks[1], sample_shape=())
+            log_p += q_posterior.log_prob(x_t)
+
+            return (key, x_t, x_0_pred, log_p), None
+
+        (key, x_t, x_0_pred, log_p), _ = jax.lax.scan(scan_fn, (key, x_t, x_t, log_p), jnp.arange(self.num_steps, -1, -1))
+
+        x_0_pred, forward_log_det_jac = self.normalizer.forward(x_0_pred, cond_vars)
+        log_p += forward_log_det_jac
+
         return x_0_pred, log_p
 
 

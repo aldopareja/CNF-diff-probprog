@@ -30,7 +30,6 @@ if __name__ == "__main__":
   # test_traces = traces
   ########
   
-  
   variable_metadata = load_traces("tmp/1M_bayes3d_metadata.pkl")
   variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)

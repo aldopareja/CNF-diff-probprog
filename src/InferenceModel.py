@@ -93,7 +93,8 @@ class InferenceModel(eqx.Module):
     embs, is_discrete, outputs, output_log_det_jacobian = self.process_order_and_get_transformer_embs(t, sk)
 
     ######## DEBUGGING ########
-    # self.continuous_dist.log_p(*map(lambda x: x[2], (outputs, embs, split(key, len(is_discrete)),output_log_det_jacobian)))
+    # from  ipdb import set_trace; set_trace()
+    # self.continuous_dist.log_p(*map(lambda x: x[1], (outputs, embs, split(key, len(is_discrete)),output_log_det_jacobian)))
 
     all_log_p = vmap(self.get_causal_log_p)(embs, is_discrete, outputs, output_log_det_jacobian, split(key, len(is_discrete)))
     return all_log_p.sum()
@@ -264,15 +265,19 @@ class InferenceModel(eqx.Module):
   @eqx.filter_jit
   def sample_continuous(self, emb, *, key, name):
     key, sk = split(key, 2)
-    z = self.continuous_dist.rsample(key=sk, cond_vars=emb)
+    r_out = self.continuous_dist.rsample(key=sk, cond_vars=emb)
+    if len(r_out) == 2:
+      z, log_p = r_out
+    else:
+      z = r_out
+      log_p = self.continuous_eval_log_prob(emb, z, key, init_logp=0.0)    
     
     metadata_k = getattr(self.variable_metadata, name)
     bijector = make_bounding_and_standardization_bijector_np(metadata_k)
     z_out = bijector.forward(z).squeeze()
     init_log_p = bijector.inverse_log_det_jacobian(z_out)
 
-    log_p = self.continuous_eval_log_prob(emb, z, key, init_logp=init_log_p)    
-    return z_out, log_p
+    return z_out, log_p + init_log_p
 
 
   def rsample(self, obs, gen_model_sampler,key):

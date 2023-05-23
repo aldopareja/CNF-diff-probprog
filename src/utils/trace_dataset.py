@@ -124,11 +124,12 @@ def build_default_trace(traces, max_traces_to_use):
         default_trace[k] = get_necessary_variable_info(v)
       #reshape as the default trace
       metadata[k]['values'].append(v['value'].reshape(*default_trace[k]['value'].shape))
-      fn = v['fn']
-      if hasattr(fn.support, 'lower_bound'):
-        metadata[k]['bounds']['lower_bound'] = min(metadata[k]['bounds']['lower_bound'], fn.support.lower_bound)
-      if hasattr(fn.support, 'upper_bound'):
-        metadata[k]['bounds']['upper_bound'] = max(metadata[k]['bounds']['upper_bound'], fn.support.upper_bound)
+      if 'fn' in v:
+        fn = v['fn']
+        if hasattr(fn.support, 'lower_bound'):
+          metadata[k]['bounds']['lower_bound'] = min(metadata[k]['bounds']['lower_bound'], fn.support.lower_bound)
+        if hasattr(fn.support, 'upper_bound'):
+          metadata[k]['bounds']['upper_bound'] = max(metadata[k]['bounds']['upper_bound'], fn.support.upper_bound)
       
     if i > max_traces_to_use:
       break

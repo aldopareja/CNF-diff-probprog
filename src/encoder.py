@@ -59,7 +59,7 @@ class EncoderLayer(eqx.Module):
     x = x + x_
     x = vmap(self.layer_norms[0])(x)
     
-    x = vmap(self.mlp)(x)
+    x_ = vmap(self.mlp)(x)
     
     x_ = self.dropout(x,key=ks[1])
     x = x + x_
