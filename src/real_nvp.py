@@ -1,4 +1,5 @@
 from typing import List
+from dataclasses import dataclass
 
 import jax
 from jax import jit, numpy as jnp
@@ -14,6 +15,17 @@ tfb_j = tfp_j.bijectors
 import equinox as eqx
 
 from src.utils.miscellaneous import augment_sample
+
+@dataclass
+class RealNVPConfig:
+  num_blocks: int = 8
+  num_layers_per_block: int = 2
+  block_hidden_size: int = 256
+  num_augments: int = 91
+  num_latents: int = 1
+  num_conds: int = 256
+  normalizer_width: int = 512
+  
 
 
 def concat_elu(x):
@@ -135,7 +147,10 @@ class RealNVP_Flow(eqx.Module):
   num_augments: int
   normalizer: Normalizer
   
-  def __init__(self,*,num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds, normalizer_width, key):
+  def __init__(self,*,c:RealNVPConfig, key):
+    num_blocks, num_layers_per_block, block_hidden_size, num_augments, num_latents, num_conds, normalizer_width = \
+      map(lambda x: getattr(c,x), ['num_blocks', 'num_layers_per_block', 'block_hidden_size', 'num_augments', 'num_latents', 'num_conds', 'normalizer_width'])
+      
     ks = split(key, num_blocks + 1)
     self.blocks = [RealNVPLayer(num_layers=num_layers_per_block,
                                 num_variables=num_latents+num_augments,
@@ -156,16 +171,7 @@ class RealNVP_Flow(eqx.Module):
     assert z.ndim == 1 and z.shape[0] == self.num_latents
     normalizer_log_p = self.normalizer.gaussian_log_p(z, cond_vars)
     
-    z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
-    
-    log_prob = init_logp + inv_log_det_jac_normalizer
-      
-    z_aug = augment_sample(key, z, self.num_augments)
-    for block in reversed(self.blocks):
-      z_aug, inv_log_det_jac = block.inverse(z_aug,cond_vars)
-      log_prob += inv_log_det_jac
-      
-    log_prob += tfd_j.Normal(0, 1).log_prob(z_aug).sum() 
+    log_prob = self.eval_log_p(z, cond_vars, key, init_logp)
     
     return log_prob + normalizer_log_p
   

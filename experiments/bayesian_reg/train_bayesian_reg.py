@@ -11,6 +11,7 @@ from tensorflow_probability.substrates import jax as tfp
 from src.diffusion_head import DiffusionHead, DiffusionConf
 from src.InferenceModel import InferenceModel, InferenceModelCfg
 from src.gaussian_mixture_head import GaussianMixture, GaussianMixtureCfg
+from src.real_nvp import RealNVP_Flow, RealNVPConfig
 tfb = tfp.bijectors
 
 import equinox as eqx
@@ -37,33 +38,46 @@ if __name__ == "__main__":
   variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)
   
-  # continuous_distribution = DiffusionHead(
-  #   c=DiffusionConf(
+  continuous_distribution = DiffusionHead(
+    c=DiffusionConf(
+      num_latents=1,
+      width_size=512,
+      depth=8,
+      num_conds=128,
+      num_steps=100,
+      noise_scale=0.008,
+      dropout_rate=0.1,
+      use_normalizer=True,
+    ),
+    key=PRNGKey(13),
+  )
+  
+  # continuous_distribution = RealNVP_Flow(
+  #   c = RealNVPConfig(
   #     num_latents=1,
-  #     width_size=256,
-  #     depth=3,
+  #     num_blocks=8,
+  #     num_layers_per_block=2,
+  #     block_hidden_size=256,
   #     num_conds=128,
-  #     num_steps=100,
-  #     noise_scale=0.008,
-  #     dropout_rate=0.1,
+  #     normalizer_width=512,
   #   ),
   #   key=PRNGKey(13),
   # )
-  gmc = GaussianMixtureCfg(
-    resnet_mlp_width=512,
-    d_model=256,
-    num_mlp_blocks=3,
-    num_mixtures=3,
-    dropout_rate=0.0,
-  )
+  # gmc = GaussianMixtureCfg(
+  #   resnet_mlp_width=512,
+  #   d_model=256,
+  #   num_mlp_blocks=3,
+  #   num_mixtures=3,
+  #   dropout_rate=0.0,
+  # )
   
-  continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
+  # continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
   
   inference = InferenceModel(
     key=PRNGKey(0),
     c=InferenceModelCfg(
         variable_metadata=variable_metadata,
-        d_model = 256,
+        d_model = 128,
         dropout_rate = 0.0,
         discrete_mlp_width = 512,
         discrete_mlp_depth=1,
@@ -106,7 +120,7 @@ if __name__ == "__main__":
   out_path = Path("tmp/")
   best_eval = float("inf")
   os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps), desc="blr_10k_0005_gmm"):
+  for i in tqdm(range(num_steps), desc="blr_10k_0005_diff_8layers"):
       start = time()
       batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -115,7 +129,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"blr_10k_0005_gmm.eqx"
+        p = out_path / f"blr_10k_0005_diff_8layers.eqx"
         eqx.tree_serialise_leaves(p, inference)
 
         key, sk = split(key)
@@ -125,6 +139,6 @@ if __name__ == "__main__":
         if eval_log_p < best_eval:
           logger.info(f"new best {eval_log_p}, took {end-start}")
           best_eval = eval_log_p
-          p = out_path / f"blr_10k_0005_gmm_best.eqx"
+          p = out_path / f"blr_10k_0005_diff_8layers_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   

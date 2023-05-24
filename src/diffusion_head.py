@@ -36,6 +36,7 @@ class DiffusionConf:
     num_steps: int = 100
     noise_scale: float = 0.008
     dropout_rate: float = 0.1
+    use_normalizer: bool = True
     
 class DiffusionNet(eqx.Module):
     layers: List[ResnetMLP]
@@ -80,11 +81,12 @@ class DiffusionHead(eqx.Module):
     mu_1: jnp.array = eqx.static_field()
     mu_2: jnp.array = eqx.static_field()
     posterior_std: jnp.array = eqx.static_field()
+    use_normalizer: bool = eqx.static_field()
 
     def __init__(self, *, c: DiffusionConf, key: PRNGKey):
                  
-        num_latents, num_conds, width_size, depth, num_steps, noise_scale, dropout_rate = \
-            map(lambda x: getattr(c, x), ['num_latents', 'num_conds', 'width_size', 'depth', 'num_steps', 'noise_scale', 'dropout_rate'])
+        num_latents, num_conds, width_size, depth, num_steps, noise_scale, dropout_rate, use_normalizer = \
+            map(lambda x: getattr(c, x), ['num_latents', 'num_conds', 'width_size', 'depth', 'num_steps', 'noise_scale', 'dropout_rate', 'use_normalizer'])
             
         ks = split(key, 2)
         self.diffusion_net = DiffusionNet(
@@ -120,6 +122,8 @@ class DiffusionHead(eqx.Module):
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
         self.posterior_std = (jnp.clip(posterior_variance, 1e-20, 1e20)) ** 0.5
         
+        self.use_normalizer = use_normalizer
+        
     def eval_log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('this adds an MSE and the logprobability of the data under the normalizer, which is not sound, but the higher the better')
 
@@ -141,8 +145,12 @@ class DiffusionHead(eqx.Module):
     def log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('only a loss, discrete diffusion does not directly compute log_likelihoods')
         assert z.ndim == 1 and z.shape[0] == 1
-        normalizer_log_p = self.normalizer.gaussian_log_p(z, cond_vars)
-        z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
+        if self.use_normalizer:
+            normalizer_log_p = self.normalizer.gaussian_log_p(z, cond_vars)
+            z, inv_log_det_jac_normalizer = self.normalizer.reverse(z, cond_vars)
+        else:
+            normalizer_log_p = 0.0
+            inv_log_det_jac_normalizer = 0.0
 
         log_prob = init_logp + inv_log_det_jac_normalizer
 
@@ -200,8 +208,9 @@ class DiffusionHead(eqx.Module):
 
         (key, x_t, x_0_pred, log_p), _ = jax.lax.scan(scan_fn, (key, x_t, x_t, log_p), jnp.arange(self.num_steps, -1, -1))
 
-        x_0_pred, forward_log_det_jac = self.normalizer.forward(x_0_pred, cond_vars)
-        log_p += forward_log_det_jac
+        if self.use_normalizer:
+            x_0_pred, forward_log_det_jac = self.normalizer.forward(x_0_pred, cond_vars)
+            log_p += forward_log_det_jac
 
         return x_0_pred, log_p
 
