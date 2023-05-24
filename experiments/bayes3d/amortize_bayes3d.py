@@ -9,9 +9,11 @@ import equinox as eqx
 import numpy as np
 import optax
 from tqdm import tqdm
+from src.diffusion_head import DiffusionConf, DiffusionHead
 
 from src.gaussian_mixture_head import GaussianMixture, GaussianMixtureCfg
 import src.InferenceModel
+from src.real_nvp import RealNVP_Flow, RealNVPConfig
 from src.utils.common_training_functions import eval_batch, evaluate_per_batch, make_step, sample_random_batch, BatchSampler
 from src.utils.trace_dataset import load_traces, serialize_traces
 from src.utils.setup_logger import setup_logger
@@ -34,30 +36,57 @@ if __name__ == "__main__":
   variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)
   
-  gmc = GaussianMixtureCfg(
-    resnet_mlp_width=512,
-    d_model=128,
-    resnet_mlp_depth=1,
-    num_mixtures=3,
+  continuous_distribution = DiffusionHead(
+    c=DiffusionConf(
+      num_latents=1,
+      width_size=512,
+      depth=8,
+      num_conds=256,
+      num_steps=100,
+      noise_scale=0.008,
+      dropout_rate=0.0,
+      use_normalizer=True,
+    ),
+    key=PRNGKey(13),
   )
   
-  continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
+  # continuous_distribution = RealNVP_Flow(
+  #   c = RealNVPConfig(
+  #     num_latents=1,
+  #     num_blocks=8,
+  #     num_layers_per_block=2,
+  #     block_hidden_size=256,
+  #     num_conds=256,
+  #     normalizer_width=512,
+  #     num_augments=91,
+  #   ),
+  #   key=PRNGKey(13),
+  # )
+  # gmc = GaussianMixtureCfg(
+  #   resnet_mlp_width=512,
+  #   d_model=256,
+  #   num_mlp_blocks=3,
+  #   num_mixtures=3,
+  #   dropout_rate=0.0,
+  # )
   
+  # continuous_distribution = GaussianMixture(c=gmc, key=PRNGKey(13))
   
-  c = src.InferenceModel.InferenceModelCfg(
-    variable_metadata=variable_metadata,
-    d_model = 128,
-    dropout_rate = 0.1,
-    discrete_mlp_width = 512,
-    discrete_mlp_depth=1,
-    num_enc_layers=5,
-    max_discrete_choices =6,
-    num_input_variables = (225,1),
-    num_observations =100,
-  )
-  inference = src.InferenceModel.InferenceModel(key=PRNGKey(0),
-                                                c=c,
-                                                continuous_distribution=continuous_distribution,)
+  inference = src.InferenceModel.InferenceModel(
+    key=PRNGKey(0),
+    c=src.InferenceModel.InferenceModelCfg(
+        variable_metadata=variable_metadata,
+        d_model = 256,
+        dropout_rate = 0.0,
+        discrete_mlp_width = 512,
+        discrete_mlp_depth=1,
+        num_enc_layers=4,
+        max_discrete_choices =6,
+        num_input_variables = (1,225),
+        num_observations =100,
+      ),
+    continuous_distribution=continuous_distribution
+    )
   
   #########Debug ##########
   # from IPython import embed; embed(using=False)
@@ -73,7 +102,7 @@ if __name__ == "__main__":
   
   # inference = eqx.tree_deserialise_leaves("tmp/500k_bayes3d.eqx", inference)
 
-  num_steps = 100000
+  num_steps = 50000
   optim = optax.chain(
       optax.clip_by_global_norm(5.0),
       optax.adamw(
@@ -88,7 +117,7 @@ if __name__ == "__main__":
       ),
   )
   
-  batch_size = 128
+  batch_size = 256
   eval_batch_size = 2000
   train_sampler = BatchSampler(traces, batch_size)
   
@@ -103,7 +132,7 @@ if __name__ == "__main__":
   
   init_time = time()
   best_eval = np.inf
-  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="1M_bayes3d_gmm_best",total= num_steps):
+  for i,batch_traces in tqdm(zip(range(num_steps), train_sampler), desc="1M_bayes3d_diff_256",total= num_steps):
       start = time()
       # batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -112,7 +141,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item():.4f} t {end-start:.4f}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"1M_bayes3d_gmm_best.eqx"
+        p = out_path / f"1M_bayes3d_diff_256.eqx"
         eqx.tree_serialise_leaves(p, inference)
         key, sk = split(key)
         start = time()
@@ -120,9 +149,11 @@ if __name__ == "__main__":
         logger.info(f"{str(i).zfill(6)} eval {eval_log_p:.4f}")
         end = time()
         if eval_log_p < best_eval:
-          logger.info(f"{str(i).zfill(6)} new best {eval_log_p:.4f}, took {end-start:.2f}, after {(time()-init_time)/60:.2f} min")
+          #print eval_log_p as in format 3.10e-5
+          
+          logger.info(f"{str(i).zfill(6)} new best {eval_log_p:.4e}, took {end-start:.2f}, after {(time()-init_time)/60:.2f} min")
           best_eval = eval_log_p
-          p = out_path / f"1M_bayes3d_gmm_best.eqx"
+          p = out_path / f"1M_bayes3d_diff_256_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   
   

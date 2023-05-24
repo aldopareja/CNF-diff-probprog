@@ -74,6 +74,7 @@ class DiffusionNet(eqx.Module):
 class DiffusionHead(eqx.Module):
     diffusion_net: DiffusionNet
     normalizer: Normalizer
+    inference: bool
     num_steps: int = eqx.static_field()
     sqrt_one_minus_alphas_cumprod: jnp.array = eqx.static_field()
     sqrt_alphas_cumprod: jnp.array = eqx.static_field()
@@ -123,6 +124,7 @@ class DiffusionHead(eqx.Module):
         self.posterior_std = (jnp.clip(posterior_variance, 1e-20, 1e20)) ** 0.5
         
         self.use_normalizer = use_normalizer
+        self.inference = False
         
     def eval_log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('this adds an MSE and the logprobability of the data under the normalizer, which is not sound, but the higher the better')
@@ -139,8 +141,13 @@ class DiffusionHead(eqx.Module):
         p_sample = self.diffusion_net(q_sample, 
                                       cond_vars + self.time_pos_emb[t], 
                                       key=ks[2])
+        
+        #at inference time we care about how close the reconstruction is to the data
+        if self.inference and self.use_normalizer:
+            p_sample, _ = self.normalizer.forward(p_sample, cond_vars)
+            q_sample, _ = self.normalizer.forward(q_sample, cond_vars)
 
-        return -((p_sample - q_sample) ** 2).mean()#-jnp.abs(p_sample - q_sample).mean()#
+        return -((p_sample - z) ** 2).mean()#-jnp.abs(p_sample - q_sample).mean()#
 
     def log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('only a loss, discrete diffusion does not directly compute log_likelihoods')
@@ -156,7 +163,7 @@ class DiffusionHead(eqx.Module):
 
         recon_loss = self.eval_log_p(z, cond_vars, key, init_logp=init_logp)
         
-        return normalizer_log_p + log_prob + recon_loss.mean()
+        return normalizer_log_p + recon_loss.mean() + log_prob
 
     def rsample_slow(self, cond_vars, key):
         assert cond_vars.ndim == 1

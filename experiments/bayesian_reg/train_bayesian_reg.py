@@ -46,7 +46,7 @@ if __name__ == "__main__":
       num_conds=128,
       num_steps=100,
       noise_scale=0.008,
-      dropout_rate=0.1,
+      dropout_rate=0.0,
       use_normalizer=True,
     ),
     key=PRNGKey(13),
@@ -120,7 +120,7 @@ if __name__ == "__main__":
   out_path = Path("tmp/")
   best_eval = float("inf")
   os.makedirs(out_path, exist_ok=True)
-  for i in tqdm(range(num_steps), desc="blr_10k_0005_diff_8layers"):
+  for i in tqdm(range(num_steps), desc="blr_diff_drop0.0"):
       start = time()
       batch_traces = sample_random_batch(traces, batch_size)
       l, inference, opt_state, key = make_step(inference, opt_state, key, batch_traces, batch_size, optim)
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         logger.info(f"{l.item()} t {end-start}")
         # print("l", l, "t", end - start)
         #save model to dummy file
-        p = out_path / f"blr_10k_0005_diff_8layers.eqx"
+        p = out_path / f"blr_diff_drop0.0.eqx"
         eqx.tree_serialise_leaves(p, inference)
 
         key, sk = split(key)
@@ -139,6 +139,6 @@ if __name__ == "__main__":
         if eval_log_p < best_eval:
           logger.info(f"new best {eval_log_p}, took {end-start}")
           best_eval = eval_log_p
-          p = out_path / f"blr_10k_0005_diff_8layers_best.eqx"
+          p = out_path / f"blr_diff_drop0.0_best.eqx"
           eqx.tree_serialise_leaves(p, inference)
   

@@ -60,7 +60,10 @@ def get_contours(plt, mu, cov, N=200):
     Z = rv.pdf(pos)
     return X, Y, Z
 
-def plot_posterior(plt, mu, cov, proposal_samples,):
+def plot_posterior(plt, mu, cov, proposal_samples, set_limits=True):
+    if set_limits:
+        plt.xlim(-2.2, -1.0)
+        plt.ylim(-2.55, -2.3)
     plt.scatter(proposal_samples['x2'], proposal_samples['x1'], alpha=0.5, s=5., label="proposal", color='red')
     if mu is not None and cov is not None:
         X, Y, Z = get_contours(plt, mu, cov)
@@ -68,6 +71,7 @@ def plot_posterior(plt, mu, cov, proposal_samples,):
         plt.colorbar(label="Posterior density")
     plt.xlabel('bias')
     plt.ylabel('slope')
+    #set limits between -1 and 1
   
   
 
