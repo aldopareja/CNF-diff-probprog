@@ -36,32 +36,32 @@ if __name__ == "__main__":
   variable_metadata = tree_map(lambda x: jnp.array(x, dtype=np.float32), variable_metadata)
   variable_metadata = dict_to_namedtuple(variable_metadata)
   
-  continuous_distribution = DiffusionHead(
-    c=DiffusionConf(
-      num_latents=1,
-      width_size=512,
-      depth=8,
-      num_conds=256,
-      num_steps=100,
-      noise_scale=0.008,
-      dropout_rate=0.0,
-      use_normalizer=True,
-    ),
-    key=PRNGKey(13),
-  )
-  
-  # continuous_distribution = RealNVP_Flow(
-  #   c = RealNVPConfig(
+  # continuous_distribution = DiffusionHead(
+  #   c=DiffusionConf(
   #     num_latents=1,
-  #     num_blocks=8,
-  #     num_layers_per_block=2,
-  #     block_hidden_size=256,
+  #     width_size=512,
+  #     depth=8,
   #     num_conds=256,
-  #     normalizer_width=512,
-  #     num_augments=91,
+  #     num_steps=100,
+  #     noise_scale=0.008,
+  #     dropout_rate=0.0,
+  #     use_normalizer=True,
   #   ),
   #   key=PRNGKey(13),
   # )
+  
+  continuous_distribution = RealNVP_Flow(
+    c = RealNVPConfig(
+      num_latents=1,
+      num_blocks=8,
+      num_layers_per_block=2,
+      block_hidden_size=256,
+      num_conds=256,
+      normalizer_width=512,
+      num_augments=91,
+    ),
+    key=PRNGKey(13),
+  )
   # gmc = GaussianMixtureCfg(
   #   resnet_mlp_width=512,
   #   d_model=256,
@@ -149,8 +149,6 @@ if __name__ == "__main__":
         logger.info(f"{str(i).zfill(6)} eval {eval_log_p:.4f}")
         end = time()
         if eval_log_p < best_eval:
-          #print eval_log_p as in format 3.10e-5
-          
           logger.info(f"{str(i).zfill(6)} new best {eval_log_p:.4e}, took {end-start:.2f}, after {(time()-init_time)/60:.2f} min")
           best_eval = eval_log_p
           p = out_path / f"1M_bayes3d_diff_256_best.eqx"

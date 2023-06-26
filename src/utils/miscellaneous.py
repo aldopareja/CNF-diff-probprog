@@ -2,8 +2,8 @@ from collections import namedtuple
 from jax.random import PRNGKey
 from jax import numpy as jnp
 from jax import vmap
-from tensorflow_probability.substrates import jax as tfp
-tfd = tfp.distributions
+from tensorflow_probability.substrates import jax as tfp_j
+tfd_j = tfp_j.distributions
 
 import optax
 
@@ -22,7 +22,7 @@ def unstandardize(a,mu,std):
 
 def augment_sample(k: PRNGKey, s, num_augment):
     new_s = jnp.concatenate(
-        [s, tfd.Normal(0, 1).sample(seed=k, sample_shape=(num_augment,))]
+        [s, tfd_j.Normal(0, 1).sample(seed=k, sample_shape=(num_augment,))]
     )
     return new_s
   
@@ -43,8 +43,8 @@ def ks_test(s1,s2, resolution=1000, r_max=10, r_min=-10):
   [1] https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test#Two-sample_Kolmogorov%E2%80%93Smirnov_test
   """
   assert s1.shape == s2.shape and s1.ndim == 1
-  cdf1 = tfd.Empirical(s1)
-  cdf2 = tfd.Empirical(s2)
+  cdf1 = tfd_j.Empirical(s1)
+  cdf2 = tfd_j.Empirical(s2)
   
   s = jnp.arange(resolution)/resolution * (r_max - r_min) + r_min
   
