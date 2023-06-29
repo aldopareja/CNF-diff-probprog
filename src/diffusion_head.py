@@ -127,6 +127,9 @@ class DiffusionHead(eqx.Module):
         self.inference = False
         
     def eval_log_p(self, z, cond_vars, key, init_logp=0.0):
+        '''
+        this function adds noise according to the schedule q(x_t|x0) and then trains p_\theta to predict q(x_t-1|x_t;x0)
+        '''
         logger.warning('this adds an MSE and the logprobability of the data under the normalizer, which is not sound, but the higher the better')
 
         ks = split(key, 3)
@@ -135,9 +138,11 @@ class DiffusionHead(eqx.Module):
         # t = jax.random.randint(ks[0], (), 0, self.num_steps)
 
         q_noise = jax.random.normal(ks[1], z.shape)
+        # this is equation 4 in DDPM paper ---> q_sample is x_t
         q_sample = self.sqrt_alphas_cumprod[t] * z + \
                     self.sqrt_one_minus_alphas_cumprod[t] * q_noise
 
+        #directly predicting x_t-1 from x_t instead 
         p_sample = self.diffusion_net(q_sample, 
                                       cond_vars + self.time_pos_emb[t], 
                                       key=ks[2])
@@ -146,8 +151,12 @@ class DiffusionHead(eqx.Module):
         if self.inference and self.use_normalizer:
             p_sample, _ = self.normalizer.forward(p_sample, cond_vars)
             q_sample, _ = self.normalizer.forward(q_sample, cond_vars)
+            
+        mu_t = self.mu_1[t] * z + self.mu_2[t] * q_sample
+            
+        eval_log_p = tfp_j.distributions.Normal(loc=mu_t, scale=self.posterior_std[t]).log_prob(p_sample)
 
-        return -((p_sample - z) ** 2).mean()#-jnp.abs(p_sample - q_sample).mean()#
+        return eval_log_p + init_logp #-((p_sample - q_sample) ** 2).mean()#-jnp.abs(p_sample - q_sample).mean()#
 
     def log_p(self, z, cond_vars, key, init_logp=0.0):
         logger.warning('only a loss, discrete diffusion does not directly compute log_likelihoods')
